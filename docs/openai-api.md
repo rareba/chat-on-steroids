@@ -40,6 +40,7 @@ distribution and set `COS_CHROME_BINARY=/absolute/path/to/chrome` when running t
 installer. It keeps a dedicated runtime/profile, loads CoS's shipped companion,
 and makes that browser available to the sign-in handoff in the same service
 session. Keep that private runtime updated alongside CoS.
+New profiles select the supplied Chrome automatically; existing profiles are preserved.
 
 To pin execution rather than use the browser's selection, set both
 `COS_OPENAI_MODEL` (an observed model id, or `latest`) and
@@ -69,6 +70,9 @@ provider Thinking selection into this request field. For example:
 Use the provider's **Auto** thinking setting to leave CoS's Extra High default
 and the Pro model's own tier in control; suffixes or explicit request effort
 still select a particular supported level. These are request options, not combos.
+9Router's dashboard model probe has a separate 60-second timeout. Queued or Pro
+requests can exceed it; validate those with a real streaming coding request and
+a client deadline matching the service's 15-minute maximum.
 `chatgpt-default` remains accepted for compatibility and follows the environment
 policy, or the browser's selection when no policy is configured.
 

@@ -53,7 +53,7 @@ if not file.exists():
         'roots': [], 'readOnly': True,
         'capabilities': dict.fromkeys(['browse','search','read','metadata','create','edit','move','deleteFile','command','screen','control','clipboardRead','clipboardWrite'], False),
         'tunnel': {'kind': 'openai', 'tunnelId': '', 'desktopTunnelId': '', 'binaryPath': ''},
-        'ui': {'minimizeToTray': False, 'autoConnect': False, 'startAtLogin': False, 'theme': 'dark', 'chatBrowser': 'cos', 'backgroundChats': False, 'mentionCore': False, 'autoContinue': False},
+        'ui': {'minimizeToTray': False, 'autoConnect': False, 'startAtLogin': False, 'theme': 'dark', 'chatBrowser': 'chrome' if os.environ.get('COS_CHROME_BINARY') else 'cos', 'backgroundChats': False, 'mentionCore': False, 'autoContinue': False},
         'multiAgent': {'enabled': False}, 'goal': {'enabled': False}, 'compaction': {'auto': False},
         'controlApi': {'enabled': True, 'allowActions': True}
     }, indent=2) + '\n')
