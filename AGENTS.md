@@ -288,7 +288,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Connector refresh | `plugin-refresh.ts` / `state/plugin-refresh.json` | Exact installed app id + schema fingerprint, claimed before Refresh, verified after. |
 | Connector proof | `connector-proof.ts` / `connector-proof.json` | Per surface and tunnel: newest request, tool call and installed evidence from earlier runs. Setup reads it as "created in ChatGPT"; it is never call authority. A changed tunnel id has no proof. |
 | Control API endpoint | `control-api.ts` / `control-api/{token,endpoint.json}` | Per launch, only while the listener runs. Token written before the endpoint; endpoint removed first on stop. A crash can leave both behind, so a caller must still reach the port. |
-| Optional coding provider | `openai-api.ts`, `openai-protocol.ts` / `openai-api/{key,endpoint.json}` | `COS_OPENAI_API_PORT` opts in; both control API consent switches must be on. Loopback only, a separate persistent private key, one completion at a time. Each request owns a fresh outbox opening and returns only its exactly attributed, completed, untruncated response. Client function tools execute only in the caller's harness. No inference usage or native role-isolation claims. |
+| Optional coding provider | `openai-api.ts`, `openai-protocol.ts` / `openai-api/{key,endpoint.json}` | `COS_OPENAI_API_PORT` opts in; both control API consent switches must be on. Loopback only, a separate persistent private key, four independent chat workers. Each request owns a fresh outbox opening and returns only its exactly attributed, completed, untruncated response. Client function tools execute only in the caller's harness. No inference usage or native role-isolation claims. |
 
 ## 5. Startup, configuration and shutdown
 
@@ -341,8 +341,17 @@ Inline admission checks the existing mandatory session framing too.
 Histories are bounded by the 8 MiB body, not a 256-message cutoff. Preserve empty
 assistant entries/tool-call arrays and namespaced historical calls; normalize
 gateway object arguments to strings without erasing the harness's error history.
-Serialize up to four in-flight HTTP requests in arrival order. Queue wait counts
-towards the caller deadline; a cancelled slot cannot bypass or cancel its predecessor.
+Run at most four independent browser chats, with 32 total in-flight HTTP requests
+and FIFO admission for waiting callers. Queued SSE headers and
+keepalives precede browser admission so a gateway does not retry a connected caller.
+Queue wait counts towards the caller deadline; a cancelled slot cannot bypass or
+cancel its predecessor. A full queue is transient 503, not account-quota 429.
+Health exposes queue occupancy. Response usage is explicitly marked as a local
+visible-text/function estimate, never ChatGPT's private reasoning or billing counter.
+Reuse an observed model catalog for at most sixty seconds; still verify actual
+delivered model and effort. `COS_HEADLESS_SERVICE=1` shortens only quiet-page
+reuse/closure to five/thirty seconds, retaining existing native safety checks.
+The optional service bounds CPU to three logical cores and memory to 8 GiB.
 Private `openai-api/pending-<id>` markers precede admission and survive a crash.
 Startup cancels only those owned abandoned rows before serving another caller,
 even with the listener disabled. Clear the marker before publishing a successful

@@ -167,20 +167,21 @@ it('cancels an unsent timed-out input without retrying', async () => {
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
 });
 
-it('queues overlapping harness turns without admitting two browser sends or causing a busy cooldown', async () => {
+it('runs four independent browser turns and publishes each answer only to its owning caller', async () => {
   process.env.COS_OPENAI_API_TIMEOUT_MS = '2000';
   try {
     const before = new Set((await listInputs()).map(row => row.id));
-    const first = request(prompt());
-    const row = await admitted(before);
-    const second = request(prompt());
-    await new Promise(resolve => setTimeout(resolve, 50));
-    expect((await listInputs()).filter(input => !before.has(input.id))).toHaveLength(1);
-    await answer(row.id, 'first answer');
-    expect((await first).status).toBe(200);
-    const next = await admitted(new Set([...before, row.id]));
-    await answer(next.id, 'second answer');
-    expect((await second).status).toBe(200);
+    const pending = Array.from({ length: 4 }, (_, i) => request(prompt({ messages: [{ role: 'user', content: `request marker ${i}` }] })));
+    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id))).toHaveLength(4));
+    const rows = (await listInputs()).filter(row => !before.has(row.id));
+    for (const row of rows.reverse()) {
+      const i = /request marker (\d)/.exec(row.text)![1];
+      await answer(row.id, 'owned answer ' + i);
+    }
+    for (const [i, response] of (await Promise.all(pending)).entries()) {
+      expect(response.status).toBe(200);
+      expect((await response.json()).choices[0].message.content).toBe('owned answer ' + i);
+    }
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
 });
 
@@ -188,17 +189,56 @@ it('expires a queued caller at its own deadline without cancelling or bypassing 
   process.env.COS_OPENAI_API_TIMEOUT_MS = '1000';
   try {
     const before = new Set((await listInputs()).map(row => row.id));
-    const first = request(prompt());
-    const row = await admitted(before);
+    const pending = Array.from({ length: 4 }, () => request(prompt()));
+    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id))).toHaveLength(4));
     process.env.COS_OPENAI_API_TIMEOUT_MS = '30';
     const started = Date.now();
     const queued = await request(prompt());
     expect(queued.status).toBe(504);
     expect(Date.now() - started).toBeLessThan(250);
-    expect((await listInputs()).filter(input => !before.has(input.id))).toHaveLength(1);
-    await answer(row.id, 'still the active request');
-    expect((await first).status).toBe(200);
+    const rows = (await listInputs()).filter(input => !before.has(input.id));
+    expect(rows).toHaveLength(4);
+    for (const row of rows) await answer(row.id, 'still the active request');
+    expect((await Promise.all(pending)).map(response => response.status)).toEqual([200, 200, 200, 200]);
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
+
+it('opens queued SSE responses promptly beyond four callers while bounding browser concurrency', async () => {
+  const before = new Set((await listInputs()).map(row => row.id));
+  const controllers = Array.from({ length: 32 }, () => new AbortController());
+  const responses: Response[] = [];
+  const pending = controllers.map(controller => fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
+    body: JSON.stringify(prompt({ stream: true })), signal: controller.signal
+  }).then(response => { responses.push(response); return response; }));
+  const settled = Promise.allSettled(pending);
+  try {
+    await vi.waitFor(() => expect(responses).toHaveLength(32), { timeout: 1000 });
+    expect(responses.map(response => response.status)).toEqual(Array(32).fill(200));
+    expect(await (await request(undefined, {}, '/v1/health')).json()).toMatchObject({ pendingRequests: 32, requestCapacity: 32 });
+    const overflow = await request(prompt());
+    expect(overflow.status).toBe(503);
+    expect(overflow.headers.get('retry-after')).toBe('2');
+    await admitted(before);
+    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id))).toHaveLength(4));
+  } finally {
+    for (const controller of controllers) controller.abort();
+    await settled;
+    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id) && row.state !== 'cancelled')).toHaveLength(0));
+  }
+});
+
+it.each([false, true])('reports marked estimated output usage for a tool-only reply, streaming=%s', async stream => {
+  const before = new Set((await listInputs()).map(row => row.id));
+  const pending = request(prompt({ stream, tools: [{ type: 'function', function: { name: 'read_file', parameters: { type: 'object' } } }] }));
+  const row = await admitted(before);
+  await answer(row.id, toolEnvelope(row.text, null, [{ name: 'read_file', arguments: { path: 'example.py' } }]));
+  const response = await pending;
+  const data = stream ? (await response.text()).split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6))).find(event => event.usage) : await response.json();
+  expect(data.usage).toMatchObject({ cos_estimated: true });
+  expect(data.usage.prompt_tokens).toBeGreaterThan(0);
+  expect(data.usage.completion_tokens).toBeGreaterThan(0);
+  expect(data.usage.total_tokens).toBe(data.usage.prompt_tokens + data.usage.completion_tokens);
 });
 
 it('retains the provider key across restarts and removes the endpoint on stop', async () => {
@@ -254,7 +294,7 @@ it('opens the existing built-in sign-in flow on demand without returning cookies
   expect((await request({}, {}, '/v1/login')).status).toBe(429);
   expect(signIn).toHaveBeenCalledOnce();
   const health = await request(undefined, {}, '/v1/health');
-  expect(await health.json()).toEqual({ browserConnected: true, signedIn: null, ready: false });
+  expect(await health.json()).toEqual({ browserConnected: true, signedIn: null, ready: false, pendingRequests: 0, requestCapacity: 32, activeRequests: 0, workerCapacity: 4 });
   vi.setSystemTime(Date.now() + 61_000);
   gate.browser = 'chrome';
   try {
@@ -397,7 +437,7 @@ it('reports external Chrome readiness from a fresh account catalog without claim
   const restore = modelPolicy([{ id: 'gpt-6', label: 'GPT-6', efforts: ['xhigh'] }]);
   try {
     const response = await request(undefined, {}, '/v1/health');
-    expect(await response.json()).toEqual({ browserConnected: true, signedIn: null, ready: true });
+    expect(await response.json()).toEqual({ browserConnected: true, signedIn: null, ready: true, pendingRequests: 0, requestCapacity: 32, activeRequests: 0, workerCapacity: 4 });
   } finally { restore(); gate.browser = 'cos'; }
 });
 
@@ -707,6 +747,7 @@ it('withdraws abandoned API openings at startup while preserving an unrelated de
 
 it('allows native discovery to use one clean helper page instead of waiting on a protected draft', async () => {
   const restore = modelPolicy([{ id: 'gpt-6', label: 'GPT-6', efforts: ['xhigh'] }]);
+  vi.mocked(chatModels.getChatModels).mockReturnValue({ ...chatModels.getChatModels(), observedAt: Date.now() - 60_001 });
   vi.mocked(chatModels.requestChatModels).mockImplementation(() => chatModels.getChatModels());
   try {
     const before = new Set((await listInputs()).map(row => row.id));
@@ -715,6 +756,18 @@ it('allows native discovery to use one clean helper page instead of waiting on a
     await answer(row.id, 'discovery completed', false, 'completed', { model: 'gpt-6', reasoningEffort: 'xhigh' });
     expect((await pending).status).toBe(200);
     expect(chatModels.requestChatModels).toHaveBeenCalledWith(true);
+  } finally { restore(); }
+});
+
+it('reuses a freshly observed model catalog instead of reopening the picker for every harness turn', async () => {
+  const restore = modelPolicy([{ id: 'gpt-6', label: 'GPT-6', efforts: ['xhigh'] }]);
+  try {
+    const before = new Set((await listInputs()).map(row => row.id));
+    const pending = request(prompt());
+    const row = await admitted(before);
+    await answer(row.id, 'fresh catalog reused', false, 'completed', { model: 'gpt-6', reasoningEffort: 'xhigh' });
+    expect((await pending).status).toBe(200);
+    expect(chatModels.requestChatModels).not.toHaveBeenCalled();
   } finally { restore(); }
 });
 

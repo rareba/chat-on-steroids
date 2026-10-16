@@ -116,6 +116,13 @@ remain enabled.
 The dedicated service keeps its work visible on the virtual display, and the
 optional Chrome wrapper disables background timer/render throttling. This avoids
 requiring a human to foreground a finished answer before its recorder can publish it.
+The service sets `COS_HEADLESS_SERVICE=1`: quiet app-owned pages become reusable
+after five seconds and eligible for closure after thirty seconds. Existing native
+draft, generation, ownership, pin and reading checks still protect them. Ordinary
+desktop installations retain their two-minute/five-minute defaults.
+The generated service caps CPU at three logical cores (`CPUQuota=300%`), gives it
+low CPU weight, and limits memory to 8 GiB. These are limits, not reservations;
+adjust them with a systemd override for your machine.
 
 ```sh
 systemctl --user status cos.service
@@ -128,12 +135,20 @@ systemctl --user restart cos.service
 - `GET /v1/models` lists the observed account model IDs plus `chatgpt-latest`.
   Account rows include the optional `reasoning_efforts` metadata extension.
   Availability depends on the signed-in account; listing is not login proof.
+  Sends reuse a successful model observation for at most sixty seconds instead
+  of reopening the native picker for every tool turn. Delivered model and effort
+  are still verified on every request.
 - `POST /v1/chat/completions` accepts text messages with system, developer,
   user and assistant role labels. Each request opens a new chat and serializes
   the supplied history as text; it does not implement native role isolation.
-- Browser execution is serialized, with up to four HTTP requests in flight.
+- Four independent browser chats run concurrently, with up to 32 HTTP requests in flight.
   Overlapping harness calls wait in order rather than causing a busy cooldown;
-  each caller's deadline includes its queue wait. The JSON body is bounded to 8 MiB. A
+  each caller's deadline includes its queue wait. Queued streaming requests send
+  headers and keepalives immediately, avoiding a gateway's connection deadline.
+  A full queue returns 503 with Retry-After, rather than a misleading account-quota 429.
+  Health reports pendingRequests, requestCapacity, activeRequests and workerCapacity.
+  More workers improve throughput across harnesses; they do not accelerate one model turn
+  or bypass the signed-in account's native limits. The JSON body is bounded to 8 MiB. A
   conversation and tool catalog exceeding the browser's 96,000-character message
   ceiling are staged intact with a unique `cos-context-<request>.txt` filename through CoS's existing native
   attachment pipeline. The message contains the instructions and a file reference;
@@ -151,7 +166,9 @@ systemctl --user restart cos.service
   that the request fits. Repeated uploads never reuse an attachment filename.
 - `stream: true` sends comment keepalives while thinking and standard SSE content
   frames **after the complete answer**, not live token deltas. Failed turns emit
-  an SSE error instead of a completion. Usage counts are omitted rather than estimated.
+  an SSE error instead of a completion. Usage counts estimate visible text and
+  function names/arguments at four characters per token, marked `cos_estimated: true`.
+  These are not ChatGPT's private token, reasoning or billing counters.
 - OpenAI function tools, `tool_choice`, `parallel_tool_calls`, assistant tool-call
   history and matching tool results are supported. Tools execute in the caller's
   harness, under its permissions, never in CoS. The browser produces a private
@@ -171,6 +188,17 @@ systemctl --user restart cos.service
   Claude Code uses 9Router's existing Anthropic-to-OpenAI translation. Keep
   the request within the 8 MiB transport ceiling. Large histories use a native
   context attachment; this does not increase the underlying model's context window.
+
+### ChatGPT limits
+
+Four workers are a local resource setting, not a claimed ChatGPT concurrency quota.
+OpenAI does not publish a fixed signed-in text-chat concurrency number in its
+[model limits](https://help.openai.com/en/articles/20001354-gpt-6-and-other-models-in-chatgpt).
+Model allowances depend on the account; Chat and Work/Codex allowances are separate.
+The [upload documentation](https://help.openai.com/en/articles/8555545-uploading-files-and-audio-to-chatgpt)
+currently lists up to 80 files per three hours, which may be lowered at peak times.
+Each oversized completion uses an upload, so long-context tool loops can reach
+that limit before the local queue fills. More workers do not increase it.
 
 Both endpoints require `Authorization: Bearer <key>`. Browser Origins and foreign
 Host headers are refused. There is no automatic resend after timeout, lost

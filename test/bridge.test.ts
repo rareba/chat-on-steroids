@@ -1026,6 +1026,29 @@ describe('provisioning', () => {
 });
 
 describe('active agent tab discard projection', () => {
+  it('reuses quiet headless service pages after five seconds and releases them after thirty', async () => {
+    process.env.COS_HEADLESS_SERVICE = '1';
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      await pair();
+      spawn({ workers: [{ task: 'service fixture' }], caller: { conversationId: PRIME_CHAT } });
+      const chat = 'dddddddd-1111-4222-8333-444444444444';
+      expect(bindConversation('worker-1', chat)).toBe(true);
+      finishAgent({ conversationId: chat }, 'finished service fixture');
+      const now = Date.now();
+      clock.mockReturnValue(now + 6_000);
+      const warm = (await request('POST', '/status', { body: { openConversations: [chat] } })).body;
+      expect(warm.idleReuseAfterMs).toBe(5_000);
+      expect(warm.idleCloseAfterMs).toBe(30_000);
+      expect(warm.reusableConversations).toEqual([chat]);
+      expect(warm.closableConversations).toEqual([]);
+      clock.mockReturnValue(now + 31_000);
+      const idle = (await request('POST', '/status', { body: { openConversations: [chat] } })).body;
+      expect(idle.closableConversations).toEqual([chat]);
+      expect(idle.retiredConversations).toEqual([]);
+      expect(agentInfoForOwnedConversation(chat)?.state).toBe('sleeping');
+    } finally { clock.mockRestore(); delete process.env.COS_HEADLESS_SERVICE; }
+  });
   it('reuses sleeping workers after two minutes and releases their pages after five without retiring them', async () => {
     const previous = getConfig();
     await saveConfig({ ...previous, multiAgent: { ...previous.multiAgent, maxWorkers: 3 }, ui: { ...previous.ui, tabsToKeepOpen: 1 } });

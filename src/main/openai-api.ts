@@ -14,7 +14,7 @@ import { cancelDesktopInput, sendDesktopInput } from './session/start-input.js';
 import { redactSecretText } from './redaction.js';
 import { logWarn } from './logger.js';
 import type { SessionEvent, ReasoningEffort } from '../shared/session.js';
-import { isReasoningEffort } from '../shared/session.js';
+import { estimateTokens, isReasoningEffort } from '../shared/session.js';
 import { getChatModels, requestChatModels } from './chat-models.js';
 import { resolveChatModel } from '../shared/chat-models.js';
 import { responseTurnId } from '../shared/chronology.js';
@@ -31,8 +31,12 @@ async function selectedModel(signal: AbortSignal, requestedModel: string, reques
   let effort: ReasoningEffort = configuredEffort;
   // A requested send may use one native discovery helper when existing pages hold
   // drafts. The existing discovery owner preserves them and never opens an SSO flow.
-  if (target === 'latest' || named) requestChatModels(true);
   let catalog = getChatModels();
+  if ((target === 'latest' || named) && (catalog.state !== 'ready' || catalog.error ||
+      catalog.observedAt === null || Date.now() - catalog.observedAt >= 60_000)) {
+    requestChatModels(true);
+    if (catalog.state !== 'pending') catalog = getChatModels();
+  }
   while (catalog.state === 'pending') {
     signal.throwIfAborted();
     await new Promise(resolve => setTimeout(resolve, 250));
@@ -61,9 +65,11 @@ async function selectedModel(signal: AbortSignal, requestedModel: string, reques
 
 let server: http.Server | null = null;
 let directory = '';
-let active: AbortController | null = null;
-let completionTail: Promise<void> = Promise.resolve();
+const active = new Set<AbortController>();
+const waiting: Array<() => void> = [];
+const workerCapacity = 4;
 const requests = new Set<Promise<void>>();
+const requestCapacity = 32;
 let lastLoginAt = 0;
 
 class ApiError extends Error {
@@ -119,20 +125,29 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
   let turnId: string | undefined;
   let questionId: string | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
-  const previous = completionTail;
-  let release!: () => void;
-  const slot = new Promise<void>(resolve => { release = resolve; });
-  completionTail = previous.then(() => slot);
   let queueAbort: (() => void) | undefined;
   try {
-    await Promise.race([previous, new Promise<void>(resolve => {
-      queueAbort = () => resolve();
+    // A queued completion is connected, not a stalled TCP connection. Send only
+    // keepalives until its verified result exists; gateways commonly allow 60s for headers.
+    if (prompt.stream) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+      res.write(': waiting\n\n');
+      heartbeat = setInterval(() => { if (!res.destroyed) res.write(': waiting\n\n'); }, 15_000);
+    }
+    await new Promise<void>(resolve => {
+      const enter = () => { active.add(controller); resolve(); };
+      queueAbort = () => {
+        const index = waiting.indexOf(enter);
+        if (index !== -1) waiting.splice(index, 1);
+        resolve();
+      };
       controller.signal.addEventListener('abort', queueAbort, { once: true });
       if (controller.signal.aborted) queueAbort();
-    })]);
+      else if (active.size < workerCapacity) enter();
+      else waiting.push(enter);
+    });
     controller.signal.removeEventListener('abort', queueAbort!);
     controller.signal.throwIfAborted();
-    active = controller;
     const selection = await selectedModel(controller.signal, prompt.model, prompt.reasoningEffort);
     const retained = prompt.attachment ? new Set((await listInputs()).filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? [])) : new Set<string>();
     const attachments = prompt.attachment ? [await stageInputAttachment({ name: prompt.attachment.name, bytes: Buffer.from(prompt.attachment.text) }, retained)] : undefined;
@@ -147,11 +162,6 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
     await sendDesktopInput({ id, sessionId: null, text: prompt.text, mode: 'auto', dueAt: Date.now(),
       ...selection, ...(attachments ? { attachments } : {}), authoredSource: 'text' }, false);
     admitted = true;
-    if (prompt.stream) {
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
-      res.write(': waiting\n\n');
-      heartbeat = setInterval(() => { if (!res.destroyed) res.write(': waiting\n\n'); }, 15_000);
-    }
     let cursor = 0;
     const finals = new Map<string, Extract<SessionEvent, { kind: 'assistant_message' }>>();
     const nativeFinals = new Map<string, Extract<SessionEvent, { kind: 'assistant_message' }>>();
@@ -202,6 +212,12 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
           const content = [...finals.values()].map(event => redactSecretText(event.message.text)).join('\n\n');
           if (content.length > 256_000) throw new ApiError(502, 'The recorded answer exceeds the 256,000 character output limit');
           const result = prompt.reply(content);
+          // ChatGPT exposes no token meter here. Reuse the local estimate and mark
+          // it explicitly; count function arguments too, including tool-only turns.
+          const prompt_tokens = estimateTokens(prompt.text + (prompt.attachment?.text ?? ''));
+          const completion_tokens = estimateTokens((result.message.content ?? '') +
+            (result.message.tool_calls ?? []).map(call => call.function.name + call.function.arguments).join('\n'));
+          const usage = { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens, cos_estimated: true };
           // Finish disk cleanup before publishing a tool call: a fast harness can
           // send its result immediately after HTTP end, before an awaited finally.
           if (ownedMarker) { await fs.rm(ownedMarker); ownedMarker = undefined; }
@@ -210,9 +226,9 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
             // Buffered SSE: publish verified complete text, never commentary or a guessed delta.
             const delta = { role: 'assistant', ...result.message, ...(result.message.tool_calls ? { tool_calls: result.message.tool_calls.map((call, index) => ({ index, ...call })) } : {}) };
             res.write('data: ' + JSON.stringify({ ...common, object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n');
-            res.write('data: ' + JSON.stringify({ ...common, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: result.finishReason }] }) + '\n\n');
+            res.write('data: ' + JSON.stringify({ ...common, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: result.finishReason }], usage }) + '\n\n');
             res.end('data: [DONE]\n\n');
-          } else reply(res, 200, { ...common, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', ...result.message }, finish_reason: result.finishReason }] });
+          } else reply(res, 200, { ...common, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', ...result.message }, finish_reason: result.finishReason }], usage });
           finished = true;
           return;
         }
@@ -243,8 +259,7 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
       } catch { /* A revoked permission or changed turn must not be overridden. */ }
     }
     if (ownedMarker && releaseMarker) await fs.rm(ownedMarker, { force: true }).catch(() => logWarn('OpenAI coding API: pending request marker could not be cleared'));
-    if (active === controller) active = null;
-    release();
+    if (active.delete(controller)) waiting.shift()?.();
   }
 }
 
@@ -292,7 +307,7 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
         const signedIn = builtin ? cosBrowserSignedIn() : null;
         const catalog = getChatModels();
         const observed = catalog.state === 'ready' && !catalog.error && catalog.observedAt !== null && Date.now() - catalog.observedAt < 3_600_000;
-        reply(res, 200, { browserConnected: bridge.present === true, signedIn, ready: bridge.present === true && (builtin ? signedIn === true : observed) });
+        reply(res, 200, { browserConnected: bridge.present === true, signedIn, ready: bridge.present === true && (builtin ? signedIn === true : observed), pendingRequests: requests.size, requestCapacity, activeRequests: active.size, workerCapacity });
       }).catch(() => reply(res, 503, { error: { message: 'Browser state is unavailable', type: 'api_error' } }));
       return;
     }
@@ -311,7 +326,10 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
       return;
     }
     if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-      if (requests.size >= 4) return reply(res, 429, { error: { message: 'Too many requests', type: 'api_error' } });
+      if (requests.size >= requestCapacity) {
+        res.setHeader('retry-after', '2');
+        return reply(res, 503, { error: { message: 'CoS completion queue is full; retry after a pending request finishes', type: 'api_error' } });
+      }
       const work = complete(req, res).catch(error => {
         const known = error instanceof ApiError || error instanceof ProtocolError;
         if (error instanceof ProtocolError) logWarn('OpenAI coding API: ' + error.message);
@@ -352,7 +370,7 @@ export async function stopOpenAiApi(): Promise<void> {
   const instance = server;
   server = null;
   if (!instance) return;
-  active?.abort(new ApiError(503, 'CoS is shutting down'));
+  for (const controller of active) controller.abort(new ApiError(503, 'CoS is shutting down'));
   instance.closeAllConnections();
   await Promise.all(requests);
   await fs.rm(path.join(directory, 'endpoint.json'), { force: true });

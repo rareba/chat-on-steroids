@@ -115,13 +115,16 @@ Environment=COS_OPENAI_API_PORT=20129
 Environment=COS_OPENAI_MODEL=latest
 Environment=COS_OPENAI_REASONING_EFFORT=xhigh
 Environment=COS_OPENAI_API_TIMEOUT_MS=900000
+Environment=COS_HEADLESS_SERVICE=1
 Environment=PATH=%h/.local/lib/cos-service/browser:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/dbus-run-session -- %h/.local/lib/cos-service/session.sh
 ExecStartPost=/usr/bin/python3 %h/.local/lib/cos-service/wait-api.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=60
-MemoryMax=6G
+CPUQuota=300%
+CPUWeight=20
+MemoryMax=8G
 UMask=0077
 [Install]
 WantedBy=default.target
