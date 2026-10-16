@@ -67,7 +67,10 @@ let server: http.Server | null = null;
 let directory = '';
 const active = new Set<AbortController>();
 const waiting: Array<() => void> = [];
-const workerCapacity = 4;
+function workerCapacity(): number {
+  const workers = Number(process.env.COS_OPENAI_WORKERS ?? 4);
+  return Number.isInteger(workers) && workers >= 1 && workers <= 8 ? workers : 4;
+}
 const requests = new Set<Promise<void>>();
 const requestCapacity = 32;
 let lastLoginAt = 0;
@@ -108,6 +111,7 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
 
 async function complete(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const prompt = await promptFor(await readBody(req));
+  if (req.headers['x-cos-transport'] === 'sse') prompt.stream = true;
   if (!actionsAllowed()) throw new ApiError(403, 'Control API actions are disabled');
   if (!(await bridgeStatus()).present) throw new ApiError(503, 'Open the CoS browser and sign in to ChatGPT before using this provider');
   if (getConfig().ui.chatBrowser === 'cos' && cosBrowserSignedIn() === false) throw new ApiError(503, 'ChatGPT is signed out; use the login window before sending requests');
@@ -143,7 +147,7 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
       };
       controller.signal.addEventListener('abort', queueAbort, { once: true });
       if (controller.signal.aborted) queueAbort();
-      else if (active.size < workerCapacity) enter();
+      else if (active.size < workerCapacity()) enter();
       else waiting.push(enter);
     });
     controller.signal.removeEventListener('abort', queueAbort!);
@@ -307,7 +311,7 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
         const signedIn = builtin ? cosBrowserSignedIn() : null;
         const catalog = getChatModels();
         const observed = catalog.state === 'ready' && !catalog.error && catalog.observedAt !== null && Date.now() - catalog.observedAt < 3_600_000;
-        reply(res, 200, { browserConnected: bridge.present === true, signedIn, ready: bridge.present === true && (builtin ? signedIn === true : observed), pendingRequests: requests.size, requestCapacity, activeRequests: active.size, workerCapacity });
+        reply(res, 200, { browserConnected: bridge.present === true, signedIn, ready: bridge.present === true && (builtin ? signedIn === true : observed), pendingRequests: requests.size, requestCapacity, activeRequests: active.size, workerCapacity: workerCapacity() });
       }).catch(() => reply(res, 503, { error: { message: 'Browser state is unavailable', type: 'api_error' } }));
       return;
     }

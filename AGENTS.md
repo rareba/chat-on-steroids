@@ -341,7 +341,7 @@ Inline admission checks the existing mandatory session framing too.
 Histories are bounded by the 8 MiB body, not a 256-message cutoff. Preserve empty
 assistant entries/tool-call arrays and namespaced historical calls; normalize
 gateway object arguments to strings without erasing the harness's error history.
-Run at most four independent browser chats, with 32 total in-flight HTTP requests
+Run four independent browser chats by default (`COS_OPENAI_WORKERS` accepts 1–8), with 32 total in-flight HTTP requests
 and FIFO admission for waiting callers. Queued SSE headers and
 keepalives precede browser admission so a gateway does not retry a connected caller.
 Queue wait counts towards the caller deadline; a cancelled slot cannot bypass or
@@ -352,6 +352,8 @@ Reuse an observed model catalog for at most sixty seconds; still verify actual
 delivered model and effort. `COS_HEADLESS_SERVICE=1` shortens only quiet-page
 reuse/closure to five/thirty seconds, retaining existing native safety checks.
 The optional service bounds CPU to three logical cores and memory to 8 GiB.
+Gateway callers may opt into `X-CoS-Transport: sse` even for non-streaming
+requests; 9Router aggregates that upstream SSE back into client JSON.
 Private `openai-api/pending-<id>` markers precede admission and survive a crash.
 Startup cancels only those owned abandoned rows before serving another caller,
 even with the listener disabled. Clear the marker before publishing a successful

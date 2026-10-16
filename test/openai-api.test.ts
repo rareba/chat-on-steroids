@@ -167,12 +167,13 @@ it('cancels an unsent timed-out input without retrying', async () => {
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
 });
 
-it('runs four independent browser turns and publishes each answer only to its owning caller', async () => {
+it.each([4, 8])('runs %s independent browser turns and publishes each answer only to its owning caller', async workers => {
+  process.env.COS_OPENAI_WORKERS = String(workers);
   process.env.COS_OPENAI_API_TIMEOUT_MS = '2000';
   try {
     const before = new Set((await listInputs()).map(row => row.id));
-    const pending = Array.from({ length: 4 }, (_, i) => request(prompt({ messages: [{ role: 'user', content: `request marker ${i}` }] })));
-    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id))).toHaveLength(4));
+    const pending = Array.from({ length: workers }, (_, i) => request(prompt({ messages: [{ role: 'user', content: `request marker ${i}` }] })));
+    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id))).toHaveLength(workers));
     const rows = (await listInputs()).filter(row => !before.has(row.id));
     for (const row of rows.reverse()) {
       const i = /request marker (\d)/.exec(row.text)![1];
@@ -182,7 +183,7 @@ it('runs four independent browser turns and publishes each answer only to its ow
       expect(response.status).toBe(200);
       expect((await response.json()).choices[0].message.content).toBe('owned answer ' + i);
     }
-  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; delete process.env.COS_OPENAI_WORKERS; }
 });
 
 it('expires a queued caller at its own deadline without cancelling or bypassing the active request', async () => {
@@ -239,6 +240,18 @@ it.each([false, true])('reports marked estimated output usage for a tool-only re
   expect(data.usage.prompt_tokens).toBeGreaterThan(0);
   expect(data.usage.completion_tokens).toBeGreaterThan(0);
   expect(data.usage.total_tokens).toBe(data.usage.prompt_tokens + data.usage.completion_tokens);
+});
+
+it('supports opt-in SSE upstream transport for gateways serving non-streaming clients', async () => {
+  const before = new Set((await listInputs()).map(row => row.id));
+  const pending = request(prompt({ stream: false }), { 'x-cos-transport': 'sse' });
+  const row = await admitted(before);
+  await answer(row.id, 'gateway JSON aggregation fixture');
+  const response = await pending;
+  expect(response.headers.get('content-type')).toBe('text/event-stream');
+  const body = await response.text();
+  expect(body).toContain('gateway JSON aggregation fixture');
+  expect(body).toContain('[DONE]');
 });
 
 it('retains the provider key across restarts and removes the endpoint on stop', async () => {

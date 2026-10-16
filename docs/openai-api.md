@@ -70,6 +70,11 @@ provider Thinking selection into this request field. For example:
 Use the provider's **Auto** thinking setting to leave CoS's Extra High default
 and the Pro model's own tier in control; suffixes or explicit request effort
 still select a particular supported level. These are request options, not combos.
+In 9Router's provider header overrides, set `X-CoS-Transport: sse`. This asks CoS
+to use SSE upstream even for `stream: false`; 9Router collects that stream into
+ordinary JSON for its non-streaming clients. Queued requests therefore receive
+headers and keepalives before the 60-second upstream connection deadline.
+Direct CoS callers retain normal JSON behavior unless they opt into this header.
 9Router's dashboard model probe has a separate 60-second timeout. Queued or Pro
 requests can exceed it; validate those with a real streaming coding request and
 a client deadline matching the service's 15-minute maximum.
@@ -141,7 +146,8 @@ systemctl --user restart cos.service
 - `POST /v1/chat/completions` accepts text messages with system, developer,
   user and assistant role labels. Each request opens a new chat and serializes
   the supplied history as text; it does not implement native role isolation.
-- Four independent browser chats run concurrently, with up to 32 HTTP requests in flight.
+- Four independent browser chats run concurrently by default. `COS_OPENAI_WORKERS`
+  accepts 1–8 workers; invalid settings retain four. There are at most 32 HTTP requests in flight.
   Overlapping harness calls wait in order rather than causing a busy cooldown;
   each caller's deadline includes its queue wait. Queued streaming requests send
   headers and keepalives immediately, avoiding a gateway's connection deadline.
@@ -191,7 +197,7 @@ systemctl --user restart cos.service
 
 ### ChatGPT limits
 
-Four workers are a local resource setting, not a claimed ChatGPT concurrency quota.
+The worker count is a local resource setting, not a claimed ChatGPT concurrency quota.
 OpenAI does not publish a fixed signed-in text-chat concurrency number in its
 [model limits](https://help.openai.com/en/articles/20001354-gpt-6-and-other-models-in-chatgpt).
 Model allowances depend on the account; Chat and Work/Codex allowances are separate.
