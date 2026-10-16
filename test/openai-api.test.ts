@@ -155,16 +155,49 @@ it.each([{ clipped: true, outcome: 'completed' as const }, { clipped: false, out
   expect((await pending).status).toBe(502);
 });
 
-it('limits concurrency and cancels an unsent timed-out input without retrying', async () => {
+it('cancels an unsent timed-out input without retrying', async () => {
   process.env.COS_OPENAI_API_TIMEOUT_MS = '100';
   try {
     const before = new Set((await listInputs()).map(row => row.id));
     const pending = request(prompt());
     const row = await admitted(before);
-    expect((await request(prompt())).status).toBe(429);
     expect((await pending).status).toBe(504);
     await vi.waitFor(async () => expect((await listInputs()).find(input => input.id === row.id)?.state).toBe('cancelled'));
     expect((await listInputs()).filter(input => !before.has(input.id))).toHaveLength(1);
+  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
+
+it('queues overlapping harness turns without admitting two browser sends or causing a busy cooldown', async () => {
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '2000';
+  try {
+    const before = new Set((await listInputs()).map(row => row.id));
+    const first = request(prompt());
+    const row = await admitted(before);
+    const second = request(prompt());
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect((await listInputs()).filter(input => !before.has(input.id))).toHaveLength(1);
+    await answer(row.id, 'first answer');
+    expect((await first).status).toBe(200);
+    const next = await admitted(new Set([...before, row.id]));
+    await answer(next.id, 'second answer');
+    expect((await second).status).toBe(200);
+  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
+
+it('expires a queued caller at its own deadline without cancelling or bypassing the active request', async () => {
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '1000';
+  try {
+    const before = new Set((await listInputs()).map(row => row.id));
+    const first = request(prompt());
+    const row = await admitted(before);
+    process.env.COS_OPENAI_API_TIMEOUT_MS = '30';
+    const started = Date.now();
+    const queued = await request(prompt());
+    expect(queued.status).toBe(504);
+    expect(Date.now() - started).toBeLessThan(250);
+    expect((await listInputs()).filter(input => !before.has(input.id))).toHaveLength(1);
+    await answer(row.id, 'still the active request');
+    expect((await first).status).toBe(200);
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
 });
 
@@ -683,4 +716,44 @@ it('allows native discovery to use one clean helper page instead of waiting on a
     expect((await pending).status).toBe(200);
     expect(chatModels.requestChatModels).toHaveBeenCalledWith(true);
   } finally { restore(); }
+});
+
+it('preserves long harness histories beyond 256 messages and empty assistant tool-call arrays', async () => {
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '2000';
+  try {
+    const messages = Array.from({ length: 400 }, (_, i) => i % 2 === 0
+      ? { role: 'user', content: `history-item-${i}` }
+      : { role: 'assistant', content: `history-item-${i}`, tool_calls: [] });
+    const before = new Set((await listInputs()).map(row => row.id));
+    const pending = request(prompt({ messages }));
+    const row = await admitted(before);
+    expect(row.text).toContain('history-item-0'); expect(row.text).toContain('history-item-399');
+    await answer(row.id, 'full history preserved');
+    expect((await pending).status).toBe(200);
+  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
+
+it('preserves namespaced tool history and object arguments normalized by a gateway', async () => {
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '2000';
+  try {
+    const before = new Set((await listInputs()).map(row => row.id));
+    const pending = request(prompt({ messages: [
+      { role: 'user', content: 'Read a file' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'past-call', type: 'function', function: { name: 'functions.read', arguments: { path: 'example.py' } } }] },
+      { role: 'tool', tool_call_id: 'past-call', content: 'file contents' },
+      { role: 'assistant', content: null },
+      { role: 'user', content: 'Explain the result' }
+    ] }));
+    const row = await admitted(before);
+    expect(row.text).toContain('functions.read'); expect(row.text).toContain('example.py');
+    await answer(row.id, 'valid history');
+    expect((await pending).status).toBe(200);
+  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
+
+it('identifies an invalid message field without including its text or argument values', async () => {
+  const response = await request(prompt({ messages: [{ role: 'assistant', content: null,
+    tool_calls: [{ id: 'call-invalid', type: 'function', function: { name: 'read', arguments: 42 } }] }] }));
+  expect(response.status).toBe(400);
+  expect((await response.json()).error.message).toContain('messages.0.tool_calls.0.function.arguments');
 });

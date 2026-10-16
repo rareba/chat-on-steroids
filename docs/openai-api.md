@@ -124,7 +124,9 @@ systemctl --user restart cos.service
 - `POST /v1/chat/completions` accepts text messages with system, developer,
   user and assistant role labels. Each request opens a new chat and serializes
   the supplied history as text; it does not implement native role isolation.
-- One request runs at a time. The JSON request body is bounded to 8 MiB. A
+- Browser execution is serialized, with up to four HTTP requests in flight.
+  Overlapping harness calls wait in order rather than causing a busy cooldown;
+  each caller's deadline includes its queue wait. The JSON body is bounded to 8 MiB. A
   conversation and tool catalog exceeding the browser's 96,000-character message
   ceiling are staged intact with a unique `cos-context-<request>.txt` filename through CoS's existing native
   attachment pipeline. The message contains the instructions and a file reference;
@@ -150,6 +152,10 @@ systemctl --user restart cos.service
   envelope becomes public tool calls; malformed, unmatched, unknown-function or
   disallowed parallel responses fail without publishing executable calls.
   Streamed tool calls use standard indexed deltas and `finish_reason: tool_calls`.
+  Long histories are bounded by the transport limit, with no arbitrary 256-message
+  cutoff. Empty assistant entries and tool-call arrays, namespaced functions and
+  gateway-normalized object arguments retain their conversation meaning. Invalid
+  fields are reported by structural path without logging their content.
 - Images, structured-output requests, legacy `functions` and multiple choices
   are rejected. Sampling
   and token-budget fields cannot control the ChatGPT UI and are not implemented.

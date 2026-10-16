@@ -338,6 +338,11 @@ ceiling goes intact through `stageInputAttachment` with a unique `cos-context-<r
 short instruction message. Pending attachments retain the existing staging
 quota/pruning ownership; file-upload/model limits remain authoritative.
 Inline admission checks the existing mandatory session framing too.
+Histories are bounded by the 8 MiB body, not a 256-message cutoff. Preserve empty
+assistant entries/tool-call arrays and namespaced historical calls; normalize
+gateway object arguments to strings without erasing the harness's error history.
+Serialize up to four in-flight HTTP requests in arrival order. Queue wait counts
+towards the caller deadline; a cancelled slot cannot bypass or cancel its predecessor.
 Private `openai-api/pending-<id>` markers precede admission and survive a crash.
 Startup cancels only those owned abandoned rows before serving another caller,
 even with the listener disabled. Clear the marker before publishing a successful

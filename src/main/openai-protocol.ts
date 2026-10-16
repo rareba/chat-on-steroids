@@ -7,16 +7,17 @@ export class ProtocolError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
-const name = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+const name = z.string().regex(/^[A-Za-z0-9_.:-]{1,256}$/);
 const args = z.record(z.string(), z.unknown());
 const tool = z.object({ type: z.literal('function'), function: z.object({
   name, description: z.string().optional(), parameters: args.optional(), strict: z.boolean().optional()
 }) });
-const call = z.object({ id: z.string().min(1).max(256), type: z.literal('function'), function: z.object({ name, arguments: z.string() }) });
+const call = z.object({ id: z.string().min(1).max(256), type: z.literal('function').default('function'), function: z.object({ name,
+  arguments: z.union([z.string(), args]).transform(value => typeof value === 'string' ? value : JSON.stringify(value)) }) });
 const message = z.object({
   role: z.enum(['system', 'developer', 'user', 'assistant', 'tool']),
   content: z.union([z.string(), z.array(z.object({ type: z.literal('text'), text: z.string() }))]).nullable().optional(),
-  tool_calls: z.array(call).min(1).max(64).optional(), tool_call_id: z.string().optional()
+  tool_calls: z.array(call).max(64).optional(), tool_call_id: z.string().optional()
 });
 const envelope = z.object({ response_token: z.string(), content: z.string().nullable(),
   tool_calls: z.array(z.object({ name, arguments: args }).strict()).max(64)
@@ -50,8 +51,11 @@ export function conversationPrompt(body: Record<string, unknown>, forceAttachmen
     }
   }
   if (!definitions.length && choice !== 'auto' && choice !== 'none') fail('tool_choice requires function tools');
-  const parsed = z.array(message).min(1).max(256).safeParse(body.messages);
-  if (!parsed.success) fail('messages must contain 1 to 256 text conversation messages with valid tool calls');
+  const parsed = z.array(message).min(1).safeParse(body.messages);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]!;
+    fail(`Invalid message field ${['messages', ...issue.path].join('.')}: ${issue.code} (${Array.isArray(body.messages) ? body.messages.length : 0} messages)`);
+  }
   const pending = new Set<string>();
   const seen = new Set<string>();
   const messages = parsed.data!.map(item => {
@@ -60,15 +64,15 @@ export function conversationPrompt(body: Record<string, unknown>, forceAttachmen
       if (item.role !== 'assistant') fail('Only assistant messages can contain tool_calls');
       for (const call of item.tool_calls) {
         if (seen.has(call.id)) fail('Tool call IDs must be unique');
-        try { if (!args.safeParse(JSON.parse(call.function.arguments)).success) fail('Tool arguments must be a JSON object'); }
-        catch { fail('Tool arguments must be a JSON object'); }
+        // Historical arguments may be malformed: preserve them alongside the harness's
+        // error result so the next model turn can repair the call instead of deadlocking.
         seen.add(call.id); pending.add(call.id);
       }
     }
     if (item.role === 'tool' && (!item.tool_call_id || !pending.delete(item.tool_call_id))) fail('Tool results must match a pending assistant tool call');
     if (item.role !== 'tool' && item.tool_call_id !== undefined) fail('Only tool messages can contain tool_call_id');
     const content = Array.isArray(item.content) ? item.content.map(part => part.text).join('\n') : item.content;
-    if (typeof content !== 'string' && !(item.role === 'assistant' && item.tool_calls)) fail('Every message needs text content, except an assistant tool call');
+    if (typeof content !== 'string' && item.role !== 'assistant') fail('Every non-assistant message needs text content');
     return { ...item, content: content ?? null };
   });
   if (pending.size) fail('Supply the pending tool results before requesting another completion');

@@ -62,6 +62,7 @@ async function selectedModel(signal: AbortSignal, requestedModel: string, reques
 let server: http.Server | null = null;
 let directory = '';
 let active: AbortController | null = null;
+let completionTail: Promise<void> = Promise.resolve();
 const requests = new Set<Promise<void>>();
 let lastLoginAt = 0;
 
@@ -105,9 +106,7 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
   if (!(await bridgeStatus()).present) throw new ApiError(503, 'Open the CoS browser and sign in to ChatGPT before using this provider');
   if (getConfig().ui.chatBrowser === 'cos' && cosBrowserSignedIn() === false) throw new ApiError(503, 'ChatGPT is signed out; use the login window before sending requests');
   if (res.destroyed) return;
-  if (active) throw new ApiError(429, 'One completion is already running');
   const controller = new AbortController();
-  active = controller;
   const configuredTimeout = Number(process.env.COS_OPENAI_API_TIMEOUT_MS ?? 180_000);
   const timeout = Number.isInteger(configuredTimeout) && configuredTimeout > 0 && configuredTimeout <= 900_000 ? configuredTimeout : 180_000;
   const timer = setTimeout(() => controller.abort(new ApiError(504, 'ChatGPT did not finish before the deadline; the prompt was not retried')), timeout);
@@ -120,7 +119,20 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
   let turnId: string | undefined;
   let questionId: string | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const previous = completionTail;
+  let release!: () => void;
+  const slot = new Promise<void>(resolve => { release = resolve; });
+  completionTail = previous.then(() => slot);
+  let queueAbort: (() => void) | undefined;
   try {
+    await Promise.race([previous, new Promise<void>(resolve => {
+      queueAbort = () => resolve();
+      controller.signal.addEventListener('abort', queueAbort, { once: true });
+      if (controller.signal.aborted) queueAbort();
+    })]);
+    controller.signal.removeEventListener('abort', queueAbort!);
+    controller.signal.throwIfAborted();
+    active = controller;
     const selection = await selectedModel(controller.signal, prompt.model, prompt.reasoningEffort);
     const retained = prompt.attachment ? new Set((await listInputs()).filter(row => !['sent', 'failed', 'cancelled'].includes(row.state)).flatMap(row => row.attachments?.map(file => file.id) ?? [])) : new Set<string>();
     const attachments = prompt.attachment ? [await stageInputAttachment({ name: prompt.attachment.name, bytes: Buffer.from(prompt.attachment.text) }, retained)] : undefined;
@@ -219,6 +231,7 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
     clearTimeout(timer);
     clearInterval(heartbeat);
     res.off('close', disconnected);
+    if (queueAbort) controller.signal.removeEventListener('abort', queueAbort);
     let releaseMarker = finished || !admitted;
     if (admitted && !finished) {
       try {
@@ -230,7 +243,8 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
       } catch { /* A revoked permission or changed turn must not be overridden. */ }
     }
     if (ownedMarker && releaseMarker) await fs.rm(ownedMarker, { force: true }).catch(() => logWarn('OpenAI coding API: pending request marker could not be cleared'));
-    active = null;
+    if (active === controller) active = null;
+    release();
   }
 }
 
@@ -300,6 +314,7 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
       if (requests.size >= 4) return reply(res, 429, { error: { message: 'Too many requests', type: 'api_error' } });
       const work = complete(req, res).catch(error => {
         const known = error instanceof ApiError || error instanceof ProtocolError;
+        if (error instanceof ProtocolError) logWarn('OpenAI coding API: ' + error.message);
         if (!known) logWarn('OpenAI text API: request failed');
         if (!res.destroyed && !res.headersSent) reply(res, known ? error.status : 502, { error: {
           message: known ? error.message : 'CoS could not complete the request; check the app', type: 'api_error'
