@@ -1306,6 +1306,7 @@
   "Leave Owned by set to You. Select your project, for example Default project. A name is optional. An expiration date is required.": "Laissez Owned by sur You. Sélectionnez votre projet, par exemple Default project. Le nom est facultatif. Une date d'expiration est requise.",
   "Image preview retained with this delivery; not yet saved to history.": "Aperçu d'image conservé avec cette livraison ; pas encore enregistré dans l'historique.",
   "Skills": "Compétences",
+  "Loading files…": "Chargement des fichiers…",
   "Loading skills…": "Chargement des compétences…",
   "No skills installed. Import a Markdown or text file.": "Aucune compétence installée. Importez un fichier Markdown ou texte.",
   "Import skill…": "Importer une compétence…",
@@ -1759,6 +1760,7 @@
   "GitHub source linked": "Source GitHub liée",
   "Skill imported from GitHub": "Compétence importée depuis GitHub",
   "No matches for “{0}”.": "Aucun résultat pour « {0} ».",
+  "No files in this folder.": "Aucun fichier dans ce dossier.",
   "No skills available.": "Aucune compétence disponible.",
   "Skill is already up to date": "La compétence est déjà à jour",
   "Skill updated from GitHub": "Compétence mise à jour depuis GitHub",
@@ -2447,5 +2449,16 @@
   "Desktop access stopped working after the update: macOS still shows it as allowed, but has to be asked again.": "L'accès au bureau ne fonctionne plus depuis la mise à jour : macOS l'affiche encore comme autorisé, mais doit le redemander.",
   "Desktop access is on, but macOS has not given Chat On Steroids the permission it needs.": "L'accès au bureau est activé, mais macOS n'a pas accordé à Chat On Steroids l'autorisation nécessaire.",
   "macOS still shows Chat On Steroids as allowed, but that permission belongs to an earlier version: without a developer signature, every update is a new app to macOS. Choose Repair permissions, allow it when macOS asks, then fully quit and reopen the app.": "macOS affiche encore Chat On Steroids comme autorisé, mais cette autorisation appartient à une version précédente : sans signature de développeur, chaque mise à jour est une nouvelle app pour macOS. Choisissez Réparer les autorisations, autorisez l'accès quand macOS le demande, puis quittez complètement et relancez l'application.",
-  "Choose Repair permissions and allow it when macOS asks, then fully quit and reopen the app. Repair also fixes a permission that System Settings shows as allowed but that no longer applies after an update.": "Choisissez Réparer les autorisations, autorisez l'accès quand macOS le demande, puis quittez complètement et relancez l'application. Cela corrige aussi une autorisation que Réglages Système affiche comme accordée mais qui ne s'applique plus après une mise à jour."
+  "Choose Repair permissions and allow it when macOS asks, then fully quit and reopen the app. Repair also fixes a permission that System Settings shows as allowed but that no longer applies after an update.": "Choisissez Réparer les autorisations, autorisez l'accès quand macOS le demande, puis quittez complètement et relancez l'application. Cela corrige aussi une autorisation que Réglages Système affiche comme accordée mais qui ne s'applique plus après une mise à jour.",
+  "Folder on this computer…": "Dossier sur cet ordinateur…",
+  "Folder on a server (SSH)…": "Dossier sur un serveur (SSH)…",
+  "Test and add": "Tester et ajouter",
+  "Add a folder on a server": "Ajouter un dossier sur un serveur",
+  "Chat On Steroids connects with your own SSH setup: your ~/.ssh/config, agent, keys and known hosts. Signing in works with a key only, and nothing is installed on the server.": "Chat On Steroids se connecte avec votre propre configuration SSH : votre ~/.ssh/config, votre agent, vos clés et vos hôtes connus. La connexion fonctionne uniquement avec une clé, et rien n'est installé sur le serveur.",
+  "SSH address": "Adresse SSH",
+  "Folder on the server": "Dossier sur le serveur",
+  "me@server, me@server:2222 or a Host from ~/.ssh/config": "moi@serveur, moi@serveur:2222 ou un Host de ~/.ssh/config",
+  "/srv/app or ~/app": "/srv/app ou ~/app",
+  "Prefer Plugins on app-sent messages": "Préférer Plugins dans les messages envoyés par l’application",
+  "When enabled, use Chat On Steroids Plugins instead of Core for ordinary prompts sent by COS. Goal, Loop, workers and recovery always keep Core. Only one app is mentioned. Messages sent directly in ChatGPT are unchanged.": "Lorsque cette option est activée, COS utilise Plugins plutôt que Core pour les messages ordinaires envoyés par l’application. Goal, Loop, les agents et la récupération conservent toujours Core. Une seule application est mentionnée. Les messages envoyés directement dans ChatGPT restent inchangés."
 }
