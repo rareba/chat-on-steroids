@@ -23,6 +23,7 @@ if [[ -n ${COS_CHROME_BINARY:-} ]]; then
 exec "$HOME/.local/share/cos-service/chrome-runtime/chrome" \
   --user-data-dir="$HOME/.local/share/cos-service/chrome-profile" \
   --load-extension='/opt/Chat On Steroids/resources/extension' \
+  --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
   --no-first-run --no-default-browser-check --disable-gpu --password-store=gnome-libsecret "$@"
 CHROME
   chmod 700 "$HOME/.local/lib/cos-service/browser/google-chrome"
@@ -52,7 +53,7 @@ if not file.exists():
         'roots': [], 'readOnly': True,
         'capabilities': dict.fromkeys(['browse','search','read','metadata','create','edit','move','deleteFile','command','screen','control','clipboardRead','clipboardWrite'], False),
         'tunnel': {'kind': 'openai', 'tunnelId': '', 'desktopTunnelId': '', 'binaryPath': ''},
-        'ui': {'minimizeToTray': False, 'autoConnect': False, 'startAtLogin': False, 'theme': 'dark', 'chatBrowser': 'cos', 'mentionCore': False, 'autoContinue': False},
+        'ui': {'minimizeToTray': False, 'autoConnect': False, 'startAtLogin': False, 'theme': 'dark', 'chatBrowser': 'cos', 'backgroundChats': False, 'mentionCore': False, 'autoContinue': False},
         'multiAgent': {'enabled': False}, 'goal': {'enabled': False}, 'compaction': {'auto': False},
         'controlApi': {'enabled': True, 'allowActions': True}
     }, indent=2) + '\n')

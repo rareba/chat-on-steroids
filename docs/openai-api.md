@@ -109,6 +109,9 @@ The web desktop closes after 15 minutes; closing it does not stop CoS. Repeat th
 same command if ChatGPT later asks you to sign in again. No browser cookies are
 copied from another machine. The Electron sandbox and secure credential checks
 remain enabled.
+The dedicated service keeps its work visible on the virtual display, and the
+optional Chrome wrapper disables background timer/render throttling. This avoids
+requiring a human to foreground a finished answer before its recorder can publish it.
 
 ```sh
 systemctl --user status cos.service
