@@ -148,7 +148,12 @@ systemctl --user restart cos.service
   the supplied history as text; it does not implement native role isolation.
 - Four independent browser chats run concurrently by default. `COS_OPENAI_WORKERS`
   accepts 1–8 workers; invalid settings retain four. There are at most 32 HTTP requests in flight.
-  Overlapping harness calls wait in order rather than causing a busy cooldown;
+  When short inline requests are waiting, one worker keeps that queue progressing;
+  the other workers retain FIFO admission. Batch work can borrow every worker
+  when no short request is waiting. This avoids tiny tool turns waiting behind
+  an entire backlog of uploaded contexts. Higher worker counts require workload
+  validation; eight caused native picker/delivery errors in a CPU-constrained test,
+  so the Debian deployment retains four.
   each caller's deadline includes its queue wait. Queued streaming requests send
   headers and keepalives immediately, avoiding a gateway's connection deadline.
   A full queue returns 503 with Retry-After, rather than a misleading account-quota 429.
@@ -168,8 +173,12 @@ systemctl --user restart cos.service
   terminal recorded reply containing this request's fresh response token, the
   exact latest question, and no running or recorded generation; no turn ID is
   invented and another question cannot lend its response to the request.
-  Inline admission also checks CoS's mandatory instruction framing before deciding
-  that the request fits. Repeated uploads never reuse an attachment filename.
+  API openings carry a durable `externalHarness` marker. Their prompt excludes
+  CoS Core permissions, skills and automation instructions: those describe a
+  different tool executor and can make the model refuse the caller's valid tools.
+  CoS's local permissions remain unchanged. Native inference framing and a
+  conservative UTF-8 byte budget are checked before deciding the request fits.
+  Repeated uploads never reuse an attachment filename.
 - `stream: true` sends comment keepalives while thinking and standard SSE content
   frames **after the complete answer**, not live token deltas. Failed turns emit
   an SSE error instead of a completion. Usage counts estimate visible text and

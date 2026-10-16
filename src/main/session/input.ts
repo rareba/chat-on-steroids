@@ -31,6 +31,8 @@ import { autoSelectManagedSkills } from '../skill-routing.js';
 import { asksForImage } from './image-request.js';
 
 export const inputArgs = z.object({
+  /** Inference only: tools execute in the calling harness, never through CoS Core. */
+  externalHarness: z.literal(true).optional(),
   projectId: z.string().uuid().nullable().optional(),
   automation: z.enum(['off', 'goal', 'loop']).optional(),
   loopAfterTurn: z.boolean().optional(),

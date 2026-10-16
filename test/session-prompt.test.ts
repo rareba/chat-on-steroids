@@ -6,6 +6,15 @@ import { initDurableStore, resetDurableForTests } from '../src/main/durable.js';
 import { addProject, assignSessionProject } from '../src/main/projects.js';
 import { createSession, initSessionStore, rebindSession, resetSessionStoreForTests } from '../src/main/session/store.js';
 import { fitSessionPrompt, prepareSessionPrompt } from '../src/main/session/prompt.js';
+
+it('keeps external harness inference separate from CoS Core tools, permissions and skills', async () => {
+  const text = 'Request the caller read_file function in JSON; the caller executes it.';
+  const prompt = await prepareSessionPrompt(text, { externalHarness: true });
+  expect(userPromptText(prompt)).toBe(text);
+  expect(prompt).not.toContain('Current Core authority');
+  expect(prompt).not.toContain('The local tools are read-only');
+  expect(prompt.length).toBeLessThan(text.length + 100);
+});
 import { MAX_CHATGPT_MESSAGE_CHARS, prependUserPrompt, userPromptText } from '../src/shared/user-prompt.js';
 import { makeTempDir, removeTempDir } from './helpers.js';
 

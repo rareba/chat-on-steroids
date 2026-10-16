@@ -100,6 +100,7 @@ it('returns complete code beyond 4,000 characters from the exact new chat and tu
   const pending = request(prompt({ messages: [{ role: 'system', content: 'Use TypeScript.' }, { role: 'user', content: 'Write code.' }] }));
   const row = await admitted(before);
   expect(row.sessionId).toBe(row.id);
+  expect(row).toMatchObject({ externalHarness: true, automation: 'off' });
   expect(row.text).toContain('Use TypeScript.');
   const code = 'export const add = (a: number, b: number) => a + b;\n'.repeat(150);
   await answer(row.id, code);
@@ -202,6 +203,38 @@ it('expires a queued caller at its own deadline without cancelling or bypassing 
     for (const row of rows) await answer(row.id, 'still the active request');
     expect((await Promise.all(pending)).map(response => response.status)).toEqual([200, 200, 200, 200]);
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
+
+it('admits a short harness turn within four releases from a large-context backlog', async () => {
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '10000';
+  const before = new Set((await listInputs()).map(row => row.id));
+  const large = (i: number) => prompt({ stream: true, messages: [{ role: 'user', content: `large-job-${i}:` + 'x'.repeat(100_000) }] });
+  const pending: Promise<Response>[] = [];
+  try {
+    for (let i = 0; i < 4; i++) pending.push(request(large(i)));
+    await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id))).toHaveLength(4));
+    for (let i = 4; i < 12; i++) pending.push(request(large(i)));
+    pending.push(request(prompt({ stream: true, messages: [{ role: 'user', content: 'short-interactive-marker' }] })));
+    await Promise.all(pending); // headers prove every queued request has arrived
+    const answered = new Set<string>();
+    let found = false;
+    for (let releases = 0; releases <= 4; releases++) {
+      const rows = (await listInputs()).filter(row => !before.has(row.id));
+      if (rows.some(row => row.text.includes('short-interactive-marker'))) { found = true; break; }
+      if (releases === 4) break;
+      const row = rows.find(row => !answered.has(row.id))!;
+      answered.add(row.id);
+      await answer(row.id, toolEnvelope(row.text, 'finished large job'));
+      await vi.waitFor(async () => expect((await listInputs()).filter(row => !before.has(row.id)).length).toBeGreaterThan(rows.length));
+    }
+    expect(found, 'short turns need a bounded admission wait while batch work keeps progressing').toBe(true);
+  } finally {
+    await api.stopControlApi();
+    await Promise.allSettled(pending);
+    await api.startControlApi();
+    port = JSON.parse(await fs.readFile(path.join(dir, 'openai-api', 'endpoint.json'), 'utf8')).port;
+    delete process.env.COS_OPENAI_API_TIMEOUT_MS;
+  }
 });
 
 it('opens queued SSE responses promptly beyond four callers while bounding browser concurrency', async () => {
@@ -718,14 +751,14 @@ it('never assigns a token-bound native final to a different question in the same
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
 });
 
-it('accounts for mandatory CoS framing before deciding that a conversation fits inline', async () => {
+it.each([{ label: 'ASCII', text: 'x'.repeat(90_000), attached: false }, { label: 'UTF-8', text: 'é'.repeat(70_000), attached: true }])('uses inference framing and a safe byte budget for near-limit $label context', async ({ text, attached }) => {
   process.env.COS_OPENAI_API_TIMEOUT_MS = '2000';
   try {
     const before = new Set((await listInputs()).map(row => row.id));
-    const pending = request(prompt({ messages: [{ role: 'user', content: 'x'.repeat(90_000) }] }));
+    const pending = request(prompt({ messages: [{ role: 'user', content: text }] }));
     const row = await admitted(before);
-    expect(row.attachments).toHaveLength(1);
-    await answer(row.id, toolEnvelope(row.text, 'framing accounted for'));
+    expect(row.attachments?.length ?? 0).toBe(attached ? 1 : 0);
+    await answer(row.id, attached ? toolEnvelope(row.text, 'framing accounted for') : 'framing accounted for');
     expect((await pending).status).toBe(200);
   } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
 });

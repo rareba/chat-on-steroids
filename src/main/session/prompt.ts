@@ -10,6 +10,7 @@ import { listSkillLibrary } from '../skill-library.js';
 import type { RoutedSkillSelection } from '../../shared/skill-routing.js';
 
 type PromptScope = { sessionId?: string | null; projectId?: string | null; autoSkills?: readonly RoutedSkillSelection[];
+  externalHarness?: boolean;
   /** Verified broker-owned worker checkout; the selected project is only the source of instructions. */
   workingDirectory?: string;
 };
@@ -118,6 +119,7 @@ export function fitSessionPrompt(text: string, core: string, agents: ProjectInst
 /** Opening normal/worker messages only. Callers own first-message eligibility;
  * follow-ups, helpers, handoff requests and resumed bootstraps never call this. */
 export async function prepareSessionPrompt(text: string, scope: PromptScope = {}, budget = limits, authored = text): Promise<string> {
+  if (scope.externalHarness) return fitSessionPrompt(text, '', null, budget);
   const folder = await promptFolder(scope);
   const skillScope = { projectPath: folder?.real ?? null };
   // Automatic routing has already frozen its decision from the app's published Skill catalog at

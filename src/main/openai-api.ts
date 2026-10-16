@@ -21,6 +21,7 @@ import { responseTurnId } from '../shared/chronology.js';
 import { conversationPrompt, ProtocolError } from './openai-protocol.js';
 import { stageInputAttachment } from './session/input-attachments.js';
 import { prepareSessionPrompt } from './session/prompt.js';
+import { MAX_CHATGPT_MESSAGE_CHARS } from '../shared/user-prompt.js';
 
 async function selectedModel(signal: AbortSignal, requestedModel: string, requestedEffort?: ReasoningEffort) {
   const named = !['chatgpt-default', 'chatgpt-latest'].includes(requestedModel);
@@ -65,8 +66,8 @@ async function selectedModel(signal: AbortSignal, requestedModel: string, reques
 
 let server: http.Server | null = null;
 let directory = '';
-const active = new Set<AbortController>();
-const waiting: Array<() => void> = [];
+const active = new Map<AbortController, boolean>();
+const waiting: Array<(() => void) & { short: boolean }> = [];
 function workerCapacity(): number {
   const workers = Number(process.env.COS_OPENAI_WORKERS ?? 4);
   return Number.isInteger(workers) && workers >= 1 && workers <= 8 ? workers : 4;
@@ -86,8 +87,9 @@ async function promptFor(value: unknown) {
   if (typeof body.model !== 'string' || (!['chatgpt-default','chatgpt-latest'].includes(body.model) && !resolveChatModel(getChatModels().models, body.model))) throw new ApiError(400, 'Use a model id from GET /v1/models');
   if ((body.n !== undefined && body.n !== 1) || (body.stream !== undefined && typeof body.stream !== 'boolean')) throw new ApiError(400, 'Use one text completion');
   let conversation = conversationPrompt(body);
+  if (!conversation.attachment && Buffer.byteLength(conversation.text) > MAX_CHATGPT_MESSAGE_CHARS) conversation = conversationPrompt(body, true);
   if (!conversation.attachment) {
-    try { await prepareSessionPrompt(conversation.text, { autoSkills: [] }); }
+    try { await prepareSessionPrompt(conversation.text, { externalHarness: true, autoSkills: [] }); }
     catch (error) {
       if (!(error instanceof Error) || !error.message.includes('exceed the delivery limit')) throw error;
       conversation = conversationPrompt(body, true);
@@ -139,7 +141,7 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
       heartbeat = setInterval(() => { if (!res.destroyed) res.write(': waiting\n\n'); }, 15_000);
     }
     await new Promise<void>(resolve => {
-      const enter = () => { active.add(controller); resolve(); };
+      const enter = Object.assign(() => { active.set(controller, !prompt.attachment); resolve(); }, { short: !prompt.attachment });
       queueAbort = () => {
         const index = waiting.indexOf(enter);
         if (index !== -1) waiting.splice(index, 1);
@@ -164,7 +166,7 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
     if (!actionsAllowed()) throw new ApiError(403, 'Control API actions are disabled');
     // Text-only browser delivery needs recording and pairing, not an MCP tunnel or tools.
     await sendDesktopInput({ id, sessionId: null, text: prompt.text, mode: 'auto', dueAt: Date.now(),
-      ...selection, ...(attachments ? { attachments } : {}), authoredSource: 'text' }, false);
+      ...selection, ...(attachments ? { attachments } : {}), authoredSource: 'none', externalHarness: true, automation: 'off' }, false);
     admitted = true;
     let cursor = 0;
     const finals = new Map<string, Extract<SessionEvent, { kind: 'assistant_message' }>>();
@@ -263,7 +265,12 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
       } catch { /* A revoked permission or changed turn must not be overridden. */ }
     }
     if (ownedMarker && releaseMarker) await fs.rm(ownedMarker, { force: true }).catch(() => logWarn('OpenAI coding API: pending request marker could not be cleared'));
-    if (active.delete(controller)) waiting.shift()?.();
+    if (active.delete(controller)) {
+      // Borrow every slot for batch work when quiet, but keep one short turn
+      // progressing when uploads would otherwise occupy the entire worker pool.
+      const short = [...active.values()].some(Boolean) ? -1 : waiting.findIndex(start => start.short);
+      waiting.splice(Math.max(0, short), 1)[0]?.();
+    }
   }
 }
 
@@ -374,7 +381,7 @@ export async function stopOpenAiApi(): Promise<void> {
   const instance = server;
   server = null;
   if (!instance) return;
-  for (const controller of active) controller.abort(new ApiError(503, 'CoS is shutting down'));
+  for (const controller of active.keys()) controller.abort(new ApiError(503, 'CoS is shutting down'));
   instance.closeAllConnections();
   await Promise.all(requests);
   await fs.rm(path.join(directory, 'endpoint.json'), { force: true });

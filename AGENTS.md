@@ -337,12 +337,18 @@ The HTTP body is bounded to 8 MiB; context above the shared browser message
 ceiling goes intact through `stageInputAttachment` with a unique `cos-context-<request>.txt` name and a
 short instruction message. Pending attachments retain the existing staging
 quota/pruning ownership; file-upload/model limits remain authoritative.
-Inline admission checks the existing mandatory session framing too.
+Inference-only openings persist `externalHarness: true`, `automation: off` and
+no authored skill-routing source. `prepareSessionPrompt` omits Core/skill/project
+instructions for that mode, without granting any local permission. The caller
+owns its function executor. Check inference framing and UTF-8 byte size before
+inline delivery; a Core read-only instruction must never override caller tools.
 Histories are bounded by the 8 MiB body, not a 256-message cutoff. Preserve empty
 assistant entries/tool-call arrays and namespaced historical calls; normalize
 gateway object arguments to strings without erasing the harness's error history.
 Run four independent browser chats by default (`COS_OPENAI_WORKERS` accepts 1–8), with 32 total in-flight HTTP requests
-and FIFO admission for waiting callers. Queued SSE headers and
+and FIFO admission for waiting callers. One available worker prioritizes waiting
+inline turns while the others advance the batch queue; all slots remain borrowable
+by batch work when no inline turn is waiting. Queued SSE headers and
 keepalives precede browser admission so a gateway does not retry a connected caller.
 Queue wait counts towards the caller deadline; a cancelled slot cannot bypass or
 cancel its predecessor. A full queue is transient 503, not account-quota 429.
