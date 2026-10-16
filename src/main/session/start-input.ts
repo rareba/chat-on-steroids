@@ -20,26 +20,28 @@ class SetupNotReady extends Error {}
 const startupError = (error: unknown): string =>
   (error instanceof SetupNotReady ? SETUP_PREFIX : BROWSER_PREFIX) + (error as Error).message;
 
-async function ready(signal?: AbortSignal): Promise<void> {
-  await connect();
-  signal?.throwIfAborted();
-  // startTunnel returns a lifecycle handle before OpenAI /readyz or cloudflared's URL.
-  // Await the existing status authority before browser work; local admission is already durable.
-  await new Promise<void>((resolve, reject) => {
-    let unsubscribe = () => {};
-    const timer = setTimeout(() => { unsubscribe(); signal?.removeEventListener('abort', abort); reject(new Error('The connector did not become ready. Check its connection status and try again.')); }, 65000);
-    timer.unref?.();
-    const abort = () => { clearTimeout(timer); unsubscribe(); reject(signal?.reason); };
-    signal?.addEventListener('abort', abort, { once: true });
-    const inspect = () => {
-      const status = getStatus();
-      if (['starting-server', 'connecting-tunnel', 'offline'].includes(status.state)) return;
-      clearTimeout(timer); unsubscribe(); signal?.removeEventListener('abort', abort);
-      if (status.state === 'connected') resolve();
-      else reject(new SetupNotReady(status.detail || 'Finish connection setup before sending.'));
-    };
-    unsubscribe = onStatusChange(inspect); inspect();
-  });
+async function ready(signal?: AbortSignal, requireConnector = true): Promise<void> {
+  if (requireConnector) {
+    await connect();
+    signal?.throwIfAborted();
+    // startTunnel returns a lifecycle handle before OpenAI /readyz or cloudflared's URL.
+    // Await the existing status authority before browser work; local admission is already durable.
+    await new Promise<void>((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timer = setTimeout(() => { unsubscribe(); signal?.removeEventListener('abort', abort); reject(new Error('The connector did not become ready. Check its connection status and try again.')); }, 65000);
+      timer.unref?.();
+      const abort = () => { clearTimeout(timer); unsubscribe(); reject(signal?.reason); };
+      signal?.addEventListener('abort', abort, { once: true });
+      const inspect = () => {
+        const status = getStatus();
+        if (['starting-server', 'connecting-tunnel', 'offline'].includes(status.state)) return;
+        clearTimeout(timer); unsubscribe(); signal?.removeEventListener('abort', abort);
+        if (status.state === 'connected') resolve();
+        else reject(new SetupNotReady(status.detail || 'Finish connection setup before sending.'));
+      };
+      unsubscribe = onStatusChange(inspect); inspect();
+    });
+  }
   signal?.throwIfAborted();
   if (!await startBridge()) throw new Error('The browser bridge could not start.');
   signal?.throwIfAborted();
@@ -60,9 +62,9 @@ export async function cancelDesktopInput(id: string): Promise<boolean> {
   start?.abort(new Error('Input cancelled'));
   return await cancelInput(id) || !!start;
 }
-async function startAcceptedInput(entry: InputEntry, controller: AbortController): Promise<void> {
+async function startAcceptedInput(entry: InputEntry, controller: AbortController, requireConnector: boolean): Promise<void> {
   try {
-    await ready(controller.signal);
+    await ready(controller.signal, requireConnector);
     controller.signal.throwIfAborted();
     const current = (await listInputs()).find(row => row.id === entry.id);
     controller.signal.throwIfAborted();
@@ -73,7 +75,7 @@ async function startAcceptedInput(entry: InputEntry, controller: AbortController
     if (starting.get(entry.id) === controller) starting.delete(entry.id);
   }
 }
-export async function sendDesktopInput(input: InputArgs): Promise<InputEntry> {
+export async function sendDesktopInput(input: InputArgs, requireConnector = true): Promise<InputEntry> {
   if (stopped) throw new Error('The app is shutting down');
   if (input.mode === 'finish' || starting.has(input.id)) return enqueueInput(input);
   const controller = new AbortController(); starting.set(input.id, controller);
@@ -84,7 +86,7 @@ export async function sendDesktopInput(input: InputArgs): Promise<InputEntry> {
       starting.delete(input.id); return entry;
     }
     // Return after durable admission, not after connection startup or native delivery.
-    void startAcceptedInput(entry, controller).catch(() => undefined);
+    void startAcceptedInput(entry, controller, requireConnector).catch(() => undefined);
     return entry;
   } catch (error) {
     if (starting.get(input.id) === controller) starting.delete(input.id);

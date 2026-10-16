@@ -78,6 +78,11 @@ open, Chrome may keep the group in its saved groups, where you can delete it. Br
 groups use the window.
 
 ## Local control API
+For a local gateway such as 9Router, the optional
+[OpenAI-compatible text endpoint](openai-api.md) exposes text coding requests
+through a separate persistent key. That guide also covers running CoS as a Debian
+service with browser login available over SSH; no physical GUI is needed.
+
 
 **Settings → General → For developers → Local control API** (off by default) lets an agent running on
 this computer check on CoS, and read its chats, from outside the app. It is meant for an agent's

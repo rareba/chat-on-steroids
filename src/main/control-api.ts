@@ -24,6 +24,7 @@ import { updateStatus } from './update.js';
 import { APP_VERSION } from './version.js';
 import { closeEventStreams, eventStreamSession, serveEventStream } from './control-stream.js';
 import { serveWorkerRead } from './control-workers.js';
+import { startOpenAiApi, stopOpenAiApi } from './openai-api.js';
 
 /**
  * The local control API: an opt-in loopback listener for a trusted local caller. It reads by
@@ -106,7 +107,10 @@ function enqueue(step: () => Promise<void>): Promise<void> {
 }
 
 export function startControlApi(): Promise<void> {
-  return enqueue(startOnce);
+  return enqueue(async () => {
+    await startOnce();
+    if (!shutdownRequested && directory) await startOpenAiApi(path.dirname(directory));
+  });
 }
 
 export function stopControlApi(): Promise<void> {
@@ -186,6 +190,7 @@ async function startOnce(): Promise<void> {
 }
 
 async function stopOnce(): Promise<void> {
+  await stopOpenAiApi();
   const instance = server;
   server = null;
   recentRequests.length = 0;

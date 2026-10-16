@@ -288,6 +288,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Connector refresh | `plugin-refresh.ts` / `state/plugin-refresh.json` | Exact installed app id + schema fingerprint, claimed before Refresh, verified after. |
 | Connector proof | `connector-proof.ts` / `connector-proof.json` | Per surface and tunnel: newest request, tool call and installed evidence from earlier runs. Setup reads it as "created in ChatGPT"; it is never call authority. A changed tunnel id has no proof. |
 | Control API endpoint | `control-api.ts` / `control-api/{token,endpoint.json}` | Per launch, only while the listener runs. Token written before the endpoint; endpoint removed first on stop. A crash can leave both behind, so a caller must still reach the port. |
+| Optional coding provider | `openai-api.ts`, `openai-protocol.ts` / `openai-api/{key,endpoint.json}` | `COS_OPENAI_API_PORT` opts in; both control API consent switches must be on. Loopback only, a separate persistent private key, one completion at a time. Each request owns a fresh outbox opening and returns only its exactly attributed, completed, untruncated response. Client function tools execute only in the caller's harness. No inference usage or native role-isolation claims. |
 
 ## 5. Startup, configuration and shutdown
 
@@ -306,6 +307,52 @@ Continuation restore follows swarm restore because it may repair prime ownership
 hooks precede browser traffic. Then the secure window/tray, bridge for recording or agents,
 the opt-in local control API, optional connector
 auto-connect and updater lifetime begin.
+The control API also starts/stops the optional text provider when
+`COS_OPENAI_API_PORT` is set. It lists observed account model IDs plus
+`chatgpt-latest`; legacy `chatgpt-default` follows the environment policy.
+Explicit IDs override the rolling model choice and use the configured effort
+(default `xhigh`), or `pro` for a model offering only that power tier. `/v1/login`
+opens the selected browser's existing sign-in flow at most once per minute and
+`/v1/health` projects browser presence plus built-in cookie sign-in or a fresh
+external account-model observation, without returning cookies. Optional
+`COS_OPENAI_MODEL=latest` plus `COS_OPENAI_REASONING_EFFORT=xhigh` refresh
+the account catalog and pin its newest numbered GPT generation at Extra High.
+Unknown/unavailable selections and mismatched delivery proof never fall back.
+An authorized completion permits the existing catalog owner to open one clean
+discovery helper if existing pages contain protected drafts; this never starts SSO.
+Explicit `reasoning_effort` overrides the environment default and must match the
+observed model's efforts; invalid/unavailable values fail before admission.
+`/v1/models` exposes those levels as optional `reasoning_efforts` metadata.
+Pro's automatic power selection applies only when no explicit effort was sent.
+Streaming requests send keepalives, then verified complete text or an SSE error.
+The opening input's exact `messageId` must own the canonical response through
+`timelineTurns.questionId` and `responseTurnId`; a missing native user `turnId`
+is not an invitation to guess. Replay the journal after late ownership arrives.
+Native uploaded-file responses can have no generation events. Only a terminal
+extension reply matching the fresh response token, the exact latest native
+question and the absence of any running/recorded generation can complete that
+path. Never synthesize a turn event or use the last visible answer as ownership.
+Function-tool requests serialize definitions and complete tool-result history.
+The HTTP body is bounded to 8 MiB; context above the shared browser message
+ceiling goes intact through `stageInputAttachment` with a unique `cos-context-<request>.txt` name and a
+short instruction message. Pending attachments retain the existing staging
+quota/pruning ownership; file-upload/model limits remain authoritative.
+Inline admission checks the existing mandatory session framing too.
+Private `openai-api/pending-<id>` markers precede admission and survive a crash.
+Startup cancels only those owned abandoned rows before serving another caller,
+even with the listener disabled. Clear the marker before publishing a successful
+tool call so an immediate tool-result continuation cannot race cleanup.
+A completed response must parse as a
+strict envelope with its fresh response token, allowed function names, object
+arguments, and the caller's tool-choice/parallel constraints. Only then publish
+OpenAI tool calls with caller-facing IDs, or a final answer. CoS never executes
+those tools. The harness owns execution, confirmation and the next completion.
+Its text-only sends call `sendDesktopInput(input, false)`: the normal durable
+outbox and paired browser delivery, with no MCP connection required. Other sends
+retain their connector requirement. Timeouts/disconnects cancel only that owned
+opening or stop its exact known turn; they never resubmit ambiguous work. See
+`docs/openai-api.md`, `test/openai-api.test.ts` and the optional Debian service
+installer `scripts/install-headless-debian.sh`.
 The current first-window model-discovery exception is noted in §21.
 A restored catalog is observed again only on Refresh, after a send whose model could not be
 confirmed, or once per saved Settings choice it does not offer (Goal helper, default worker:
