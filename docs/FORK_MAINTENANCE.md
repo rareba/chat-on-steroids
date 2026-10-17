@@ -8,6 +8,8 @@ For a fresh clone of `rareba/chat-on-steroids`, configure the original project o
 
 ```sh
 git remote add upstream https://github.com/totec448-spec/chat-on-steroids.git
+git config pull.rebase false
+git config pull.ff false
 ```
 
 For each update, start with a clean working tree and merge the original project:
