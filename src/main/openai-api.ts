@@ -22,8 +22,10 @@ import { conversationPrompt, ProtocolError } from './openai-protocol.js';
 import { stageInputAttachment } from './session/input-attachments.js';
 import { prepareSessionPrompt } from './session/prompt.js';
 import { MAX_CHATGPT_MESSAGE_CHARS } from '../shared/user-prompt.js';
+import { readDurable, writeDurableSoon } from './durable.js';
 
 async function selectedModel(signal: AbortSignal, requestedModel: string, requestedEffort?: ReasoningEffort) {
+  const discoveryDeadline = Date.now() + 15000;
   const named = !['chatgpt-default', 'chatgpt-latest'].includes(requestedModel);
   const target = named ? requestedModel : requestedModel === 'chatgpt-latest' ? 'latest' : process.env.COS_OPENAI_MODEL ?? (requestedEffort ? 'latest' : undefined);
   const configuredEffort = requestedEffort ?? process.env.COS_OPENAI_REASONING_EFFORT ?? (named || requestedModel === 'chatgpt-latest' ? 'xhigh' : undefined);
@@ -40,6 +42,7 @@ async function selectedModel(signal: AbortSignal, requestedModel: string, reques
   }
   while (catalog.state === 'pending') {
     signal.throwIfAborted();
+    if (Date.now() >= discoveryDeadline) throw new ApiError(503, `ChatGPT model discovery is blocked: ${catalog.waiting || 'check the signed-in browser and refresh the account model catalog'}`);
     await new Promise(resolve => setTimeout(resolve, 250));
     catalog = getChatModels();
   }
@@ -75,9 +78,17 @@ function workerCapacity(): number {
 const requests = new Set<Promise<void>>();
 const requestCapacity = 32;
 let lastLoginAt = 0;
+let providerLimit: { retryAt: number; message: string } | null = null;
+function currentProviderLimit() {
+  if (providerLimit && providerLimit.retryAt <= Date.now()) {
+    providerLimit = null;
+    writeDurableSoon('openai-provider-limit', null);
+  }
+  return providerLimit;
+}
 
 class ApiError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly retryAt?: number) { super(message); }
 }
 
 async function promptFor(value: unknown) {
@@ -113,6 +124,8 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
 
 async function complete(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const prompt = await promptFor(await readBody(req));
+  const paused = currentProviderLimit();
+  if (paused) throw new ApiError(429, paused.message, paused.retryAt);
   if (req.headers['x-cos-transport'] === 'sse') prompt.stream = true;
   if (!actionsAllowed()) throw new ApiError(403, 'Control API actions are disabled');
   if (!(await bridgeStatus()).present) throw new ApiError(503, 'Open the CoS browser and sign in to ChatGPT before using this provider');
@@ -179,6 +192,8 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
       if (page) {
         const previousTurn = turnId;
         for (const event of page.events) {
+          // An account refusal can happen before ChatGPT accepts a user message or creates a turn.
+          if (event.kind === 'chat_error' && event.blocking) throw new ApiError(429, event.message.text, event.retryAt);
           if (event.kind === 'user_message' && event.inputId === id) {
             if (selection.model) {
               if (!event.model || !event.reasoningEffort) continue;
@@ -189,7 +204,6 @@ async function complete(req: http.IncomingMessage, res: http.ServerResponse): Pr
           }
           if (event.kind === 'assistant_message' && event.source === 'extension' && event.final && event.messageId && !event.turnId) nativeFinals.set(event.messageId, event);
           if (!turnId || !event.turnId || responseTurnId(page.summary.timelineTurns, event.turnId) !== turnId) continue;
-          if (event.kind === 'chat_error' && event.blocking) throw new ApiError(502, 'ChatGPT reported a blocking error');
           if (event.kind === 'assistant_message' && event.final && event.messageId) finals.set(event.messageId, event);
           if (event.kind === 'turn_end') ended = event;
         }
@@ -292,6 +306,13 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
   if (setting === undefined || !actionsAllowed()) return;
   if (!/^\d{1,5}$/.test(setting) || Number(setting) > 65535) throw new Error('COS_OPENAI_API_PORT must be a port number');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  providerLimit = null;
+  const savedLimit = await readDurable('openai-provider-limit');
+  if (savedLimit && typeof savedLimit === 'object' && 'retryAt' in savedLimit && 'message' in savedLimit &&
+      typeof savedLimit.retryAt === 'number' && Number.isFinite(savedLimit.retryAt) && savedLimit.retryAt > Date.now() &&
+      savedLimit.retryAt <= Date.now() + 86400000 && typeof savedLimit.message === 'string' && savedLimit.message.length <= 500) {
+    providerLimit = { retryAt: savedLimit.retryAt, message: savedLimit.message };
+  }
   const keyFile = path.join(directory, 'key');
   try { await fs.writeFile(keyFile, randomBytes(32).toString('base64url') + '\n', { mode: 0o600, flag: 'wx' }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
@@ -318,7 +339,8 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
         const signedIn = builtin ? cosBrowserSignedIn() : null;
         const catalog = getChatModels();
         const observed = catalog.state === 'ready' && !catalog.error && catalog.observedAt !== null && Date.now() - catalog.observedAt < 3_600_000;
-        reply(res, 200, { browserConnected: bridge.present === true, signedIn, ready: bridge.present === true && (builtin ? signedIn === true : observed), pendingRequests: requests.size, requestCapacity, activeRequests: active.size, workerCapacity: workerCapacity() });
+        const paused = currentProviderLimit();
+        reply(res, 200, { browserConnected: bridge.present === true, signedIn, ready: !paused && bridge.present === true && (builtin ? signedIn === true : observed), providerLimit: paused, modelCatalog: { state: catalog.state, observedAt: catalog.observedAt, waiting: catalog.waiting || null, error: catalog.error || null }, pendingRequests: requests.size, requestCapacity, activeRequests: active.size, workerCapacity: workerCapacity() });
       }).catch(() => reply(res, 503, { error: { message: 'Browser state is unavailable', type: 'api_error' } }));
       return;
     }
@@ -343,13 +365,22 @@ export async function startOpenAiApi(userDataDir: string): Promise<void> {
       }
       const work = complete(req, res).catch(error => {
         const known = error instanceof ApiError || error instanceof ProtocolError;
+        if (error instanceof ApiError && error.status === 429) {
+          const retryAt = error.retryAt && Number.isFinite(error.retryAt) && error.retryAt > Date.now()
+            ? Math.min(error.retryAt, Date.now() + 86400000) : Date.now() + 60000;
+          providerLimit = { retryAt: Math.max(providerLimit?.retryAt || 0, retryAt), message: redactSecretText(error.message).slice(0, 500) };
+          writeDurableSoon('openai-provider-limit', providerLimit);
+        }
         if (error instanceof ProtocolError) logWarn('OpenAI coding API: ' + error.message);
         if (!known) logWarn('OpenAI text API: request failed');
+        const retryAt = error instanceof ApiError ? error.status === 429 ? providerLimit?.retryAt : error.retryAt : undefined;
+        if (!res.headersSent && retryAt && retryAt > Date.now()) res.setHeader('retry-after', String(Math.ceil((retryAt - Date.now()) / 1000)));
         if (!res.destroyed && !res.headersSent) reply(res, known ? error.status : 502, { error: {
-          message: known ? error.message : 'CoS could not complete the request; check the app', type: 'api_error'
+          message: known ? error.message : 'CoS could not complete the request; check the app', type: 'api_error', status: known ? error.status : 502
         } });
         else if (!res.destroyed) res.end('data: ' + JSON.stringify({ error: {
-          message: known ? error.message : 'CoS could not complete the request; check the app', type: 'api_error'
+          message: known ? error.message : 'CoS could not complete the request; check the app', type: 'api_error', status: known ? error.status : 502,
+          ...(retryAt ? { retry_at: retryAt } : {})
         } }) + '\n\ndata: [DONE]\n\n');
       });
       requests.add(work);

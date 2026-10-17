@@ -13,7 +13,7 @@ interface DomApi {
   sendButton(): HTMLButtonElement | null;
   temporaryChatReady(): boolean;
   confirmTemporaryChatIntroduction(): void;
-  errors(): Array<{ text: string; recoverable: boolean; blocking?: boolean }>;
+  errors(): Array<{ text: string; recoverable: boolean; blocking?: boolean; retryAt?: number }>;
   captureComposerDraft(text: string, current?: () => boolean): { current(): boolean; clear(): Promise<boolean>; withdraw(): boolean; dispose(): void; attachments(nodes: Element[]): void };
   visibleModelSelection(): { model: string; reasoningEffort?: string } | null;
   hasComposerAttachments(): boolean;
@@ -1423,6 +1423,20 @@ describe('transport-card scan cost', () => {
 });
 
 describe('provider limit notice', () => {
+  it('recognizes the account reliability check as blocking and never as a retryable transport error', () => {
+    const date = new Date(); date.setHours(9, 30, 0, 0);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(date);
+    dom.window.Date = Date;
+    try {
+      const notice = document.createElement('div'); notice.setAttribute('role', 'alert');
+      notice.textContent = "We're doing a quick check to keep ChatGPT reliable. Try again after 9:50 AM.";
+      document.body.append(notice);
+      const until = new Date(date); until.setHours(9, 50, 0, 0);
+      expect(api.errors()).toEqual([expect.objectContaining({ blocking: true, recoverable: false, retryAt: until.getTime() })]);
+      notice.setAttribute('aria-hidden', 'true'); expect(api.errors()).toEqual([]);
+      notice.removeAttribute('aria-hidden'); notice.textContent = 'An article about quick reliability checks'; expect(api.errors()).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
   it('records and acknowledges the exact Korean access notice once without accepting other dialogs', () => {
     const notice = document.createElement('div'); notice.setAttribute('role', 'dialog');
     notice.innerHTML = '<h2>요청이 너무 많습니다</h2><p>요청을 너무 빠르게 보내고 있습니다. 데이터를 보호하기 위해 대화에 대한 액세스가 일시적으로 제한되었습니다. 몇 분 후 다시 시도해 주세요.</p><button>알겠습니다</button>';

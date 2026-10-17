@@ -1753,6 +1753,16 @@ var CLF_DOM = (() => {
         if (!displayed(node)) continue;
         const value = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
         if (value.length <= 2 || value.length >= 500) continue;
+        const check = /^We['’]re doing a quick check to keep ChatGPT reliable\. Try again after (\d{1,2}):(\d{2})\s*(AM|PM)\.?$/i.exec(value);
+        if (check && !node.closest(TURN)) {
+          const hour = Number(check[1]), minute = Number(check[2]);
+          const until = new Date();
+          until.setHours(hour % 12 + (check[3].toUpperCase() === 'PM' ? 12 : 0), minute, 0, 0);
+          const retryAt = hour >= 1 && hour <= 12 && minute <= 59 && until.getTime() > Date.now() ? until.getTime() : undefined;
+          out.push({ text: value, node, turnId: null, recoverable: false, blocking: true, ...(retryAt ? { retryAt } : {}) });
+          texts.add(value);
+          continue;
+        }
         // Provider live regions also announce successful settings/actions changes. Only the
         // existing transport classifier makes an announcement a chat error. A failed send
         // can precede an assistant section, so recognized failures still need no turn id.
