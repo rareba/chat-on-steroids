@@ -3531,6 +3531,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         // "Follow new output" applies to the ChatGPT page too; the page owns the scrolling.
         followOutput: getConfig().ui.followOutput !== false,
         mentionCore: getConfig().ui.mentionCore !== false,
+        mentionPlugins: getConfig().ui.mentionPlugins === true,
         // This chat was opened by the app, so its first user message is not the user's —
         // it is the handoff brief or the worker bootstrap this app typed. The page uses
         // it to fold that message away. Read off the session record rather than remembered
@@ -4288,6 +4289,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         context: contextView(),
         followOutput: getConfig().ui.followOutput !== false,
         mentionCore: getConfig().ui.mentionCore !== false,
+        mentionPlugins: getConfig().ui.mentionPlugins === true,
         goal: {
           enabled: getConfig().goal.enabled,
           // The app-wide setting is nobody's own answer, by definition: it is what a chat that
@@ -8429,6 +8431,11 @@ function noticeRefusal(key: string, message: string): void {
  * The extension still proves the exact document has no draft or generation before closing.
  */
 async function browserTabPolicy(openConversations: Set<string>) {
+  // Dedicated services recycle quiet pages promptly. Keep all existing ownership,
+  // live-work, reading, pin and native draft checks; shorten only idle retention.
+  const headless = process.env.COS_HEADLESS_SERVICE === '1';
+  const idleReuseAfterMs = headless ? 5_000 : 120_000;
+  const idleCloseAfterMs = headless ? 30_000 : 300_000;
   // Existing cached metadata is the ownership index; never scan transcripts per browser poll.
   const summaries = await listUsageSessions();
   // A Compact & Resume destination is stamped `resume`, but it is the user's own chat moved to a
@@ -8521,17 +8528,17 @@ async function browserTabPolicy(openConversations: Set<string>) {
     return row?.activeTurnId === null && Math.max(row.lastTurnEndAt ?? 0, row.lastAssistantFinalAt ?? 0) > 0;
   });
   const quietFor = (id: string, ms: number) => Date.now() - lastActivity.get(id)! >= ms;
-  const idlePages = available.filter(id => quietFor(id, 300_000));
+  const idlePages = available.filter(id => quietFor(id, idleCloseAfterMs));
   return {
-    idleReuseAfterMs: 120_000,
-    idleCloseAfterMs: 300_000,
+    idleReuseAfterMs,
+    idleCloseAfterMs,
     cancelledDecisionClaims: cancelledDecisionClaims.map(row => ({ id: row.id, owner: row.owner, conversationId: row.conversationId })),
     // Only terminal/blocked helpers and superseded sources grant close authority.
     retiredConversations: [...new Set([...idle, ...supersededSourceConversations()])]
       .filter(id => openConversations.has(id) && !protectedChats.has(id)).sort(),
     conversationActivityAt: Object.fromEntries(lastActivity),
     managedConversations: [...managed].sort(),
-    reusableConversations: available.filter(id => quietFor(id, 120_000) && !isGoalDecisionChat(id) &&
+    reusableConversations: available.filter(id => quietFor(id, idleReuseAfterMs) && !isGoalDecisionChat(id) &&
       !supersededSourceConversations().includes(id)).sort(),
     nonDiscardableConversations: [...protectedChats].sort(),
     blockedConversations: blocked.sort(),

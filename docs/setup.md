@@ -78,6 +78,11 @@ open, Chrome may keep the group in its saved groups, where you can delete it. Br
 groups use the window.
 
 ## Local control API
+For a local gateway such as 9Router, the optional
+[OpenAI-compatible text endpoint](openai-api.md) exposes text coding requests
+through a separate persistent key. That guide also covers running CoS as a Debian
+service with browser login available over SSH; no physical GUI is needed.
+
 
 **Settings → General → For developers → Local control API** (off by default) lets an agent running on
 this computer check on CoS, and read its chats, from outside the app. It is meant for an agent's
@@ -129,6 +134,28 @@ Requests need `Authorization: Bearer <token>`. Any request with a browser `Origi
 A read that waits on something the app cannot answer within 15 seconds gets `504 timeout`, and `/v1/health` keeps answering (within the same rate limit), so a caller can tell an app that is waiting from one that is not running. An app frozen outright answers nothing.
 Turning the switch off, or quitting, stops the listener and removes both files. A crash can leave
 them behind, so a caller should treat a refused connection as "not running".
+
+## Projects on a server (SSH)
+
+A project can be a folder on another computer that you reach with SSH. Click **+** next to
+**Projects** in the sidebar, choose **Folder on a server (SSH)…**, then enter:
+
+- **SSH address**: `me@server`, `me@server:2222`, or a `Host` name from your `~/.ssh/config`.
+- **Folder on the server**: an absolute path such as `/srv/app`, or one in your home folder such as `~/app`.
+
+**Test and add** connects once and checks that the folder exists. Chat On Steroids uses your own
+SSH setup (`~/.ssh/config`, your agent, keys and known hosts) and installs nothing on the server.
+The server needs SSH with SFTP and a POSIX shell (Linux, macOS, BSD).
+
+- **Sign-in with a key only.** The app can't answer password prompts. If `ssh <address>` in a
+  terminal asks for a password, add your key to the server or your agent first.
+- **New servers:** connect once in a terminal and confirm the host key; until then the app says
+  "This server is not trusted yet".
+- **What works there:** reading and searching files, images, `apply_patch`, commands (each command
+  is its own SSH connection) and the workspace terminal. Files in the app lists and previews text.
+- **Not yet:** editing files from the app's Files panel, the Git panel, and separate worktrees for
+  sub-agents (they work in the server folder itself). ChatGPT can still change files and run Git
+  with its tools.
 
 ## Permissions and plugins
 

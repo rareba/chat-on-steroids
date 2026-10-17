@@ -288,6 +288,7 @@ Paths in this section are repository-relative. Most mechanisms have `main`, `sha
 | Connector refresh | `plugin-refresh.ts` / `state/plugin-refresh.json` | Exact installed app id + schema fingerprint, claimed before Refresh, verified after. |
 | Connector proof | `connector-proof.ts` / `connector-proof.json` | Per surface and tunnel: newest request, tool call and installed evidence from earlier runs. Setup reads it as "created in ChatGPT"; it is never call authority. A changed tunnel id has no proof. |
 | Control API endpoint | `control-api.ts` / `control-api/{token,endpoint.json}` | Per launch, only while the listener runs. Token written before the endpoint; endpoint removed first on stop. A crash can leave both behind, so a caller must still reach the port. |
+| Optional coding provider | `openai-api.ts`, `openai-protocol.ts` / `openai-api/{key,endpoint.json}` | `COS_OPENAI_API_PORT` opts in; both control API consent switches must be on. Loopback only, a separate persistent private key, four independent chat workers. Each request owns a fresh outbox opening and returns only its exactly attributed, completed, untruncated response. Client function tools execute only in the caller's harness. No inference usage or native role-isolation claims. |
 
 ## 5. Startup, configuration and shutdown
 
@@ -306,6 +307,74 @@ Continuation restore follows swarm restore because it may repair prime ownership
 hooks precede browser traffic. Then the secure window/tray, bridge for recording or agents,
 the opt-in local control API, optional connector
 auto-connect and updater lifetime begin.
+The control API also starts/stops the optional text provider when
+`COS_OPENAI_API_PORT` is set. It lists observed account model IDs plus
+`chatgpt-latest`; legacy `chatgpt-default` follows the environment policy.
+Explicit IDs override the rolling model choice and use the configured effort
+(default `xhigh`), or `pro` for a model offering only that power tier. `/v1/login`
+opens the selected browser's existing sign-in flow at most once per minute and
+`/v1/health` projects browser presence plus built-in cookie sign-in or a fresh
+external account-model observation, without returning cookies. Optional
+`COS_OPENAI_MODEL=latest` plus `COS_OPENAI_REASONING_EFFORT=xhigh` refresh
+the account catalog and pin its newest numbered GPT generation at Extra High.
+Unknown/unavailable selections and mismatched delivery proof never fall back.
+An authorized completion permits the existing catalog owner to open one clean
+discovery helper if existing pages contain protected drafts; this never starts SSO.
+Explicit `reasoning_effort` overrides the environment default and must match the
+observed model's efforts; invalid/unavailable values fail before admission.
+`/v1/models` exposes those levels as optional `reasoning_efforts` metadata.
+Pro's automatic power selection applies only when no explicit effort was sent.
+Streaming requests send keepalives, then verified complete text or an SSE error.
+The opening input's exact `messageId` must own the canonical response through
+`timelineTurns.questionId` and `responseTurnId`; a missing native user `turnId`
+is not an invitation to guess. Replay the journal after late ownership arrives.
+Native uploaded-file responses can have no generation events. Only a terminal
+extension reply matching the fresh response token, the exact latest native
+question and the absence of any running/recorded generation can complete that
+path. Never synthesize a turn event or use the last visible answer as ownership.
+Function-tool requests serialize definitions and complete tool-result history.
+The HTTP body is bounded to 8 MiB; context above the shared browser message
+ceiling goes intact through `stageInputAttachment` with a unique `cos-context-<request>.txt` name and a
+short instruction message. Pending attachments retain the existing staging
+quota/pruning ownership; file-upload/model limits remain authoritative.
+Inference-only openings persist `externalHarness: true`, `automation: off` and
+no authored skill-routing source. `prepareSessionPrompt` omits Core/skill/project
+instructions for that mode, without granting any local permission. The caller
+owns its function executor. Check inference framing and UTF-8 byte size before
+inline delivery; a Core read-only instruction must never override caller tools.
+Histories are bounded by the 8 MiB body, not a 256-message cutoff. Preserve empty
+assistant entries/tool-call arrays and namespaced historical calls; normalize
+gateway object arguments to strings without erasing the harness's error history.
+Run four independent browser chats by default (`COS_OPENAI_WORKERS` accepts 1–8), with 32 total in-flight HTTP requests
+and FIFO admission for waiting callers. One available worker prioritizes waiting
+inline turns while the others advance the batch queue; all slots remain borrowable
+by batch work when no inline turn is waiting. Queued SSE headers and
+keepalives precede browser admission so a gateway does not retry a connected caller.
+Queue wait counts towards the caller deadline; a cancelled slot cannot bypass or
+cancel its predecessor. A full queue is transient 503, not account-quota 429.
+Health exposes queue occupancy. Response usage is explicitly marked as a local
+visible-text/function estimate, never ChatGPT's private reasoning or billing counter.
+Reuse an observed model catalog for at most sixty seconds; still verify actual
+delivered model and effort. `COS_HEADLESS_SERVICE=1` shortens only quiet-page
+reuse/closure to five/thirty seconds, retaining existing native safety checks.
+The optional service bounds CPU to three logical cores and memory to 8 GiB.
+Gateway callers may opt into `X-CoS-Transport: sse` even for non-streaming
+requests; 9Router aggregates that upstream SSE back into client JSON.
+Private `openai-api/pending-<id>` markers precede admission and survive a crash.
+Startup cancels only those owned abandoned rows before serving another caller,
+even with the listener disabled. Clear the marker before publishing a successful
+tool call so an immediate tool-result continuation cannot race cleanup.
+A completed response must parse as a
+strict envelope with its fresh response token, allowed function names, object
+arguments, and the caller's tool-choice/parallel constraints. Only then publish
+OpenAI tool calls with caller-facing IDs, or a final answer. CoS never executes
+those tools. The harness owns execution, confirmation and the next completion.
+Its text-only sends call `sendDesktopInput(input, false)`: the normal durable
+outbox and paired browser delivery, with no MCP connection required. Other sends
+retain their connector requirement. Timeouts/disconnects cancel only that owned
+opening or stop its exact known turn; they never resubmit ambiguous work. See
+`docs/openai-api.md`, `test/openai-api.test.ts` and the optional Debian service
+installer `scripts/install-headless-debian.sh`.
 The current first-window model-discovery exception is noted in §21.
 A restored catalog is observed again only on Refresh, after a send whose model could not be
 confirmed, or once per saved Settings choice it does not offer (Goal helper, default worker:
@@ -466,16 +535,23 @@ then acts as a package-bounded alias for that target; resource paths are revalid
 cannot traverse above the linked package. The managed root itself and linked `SKILL.md` files
 remain non-linkable. Desktop and external plugins receive no managed root.
 
-Skills open through leading `/` completion in the composer; the attachment popup's Skills button
-inserts that leading slash and focuses the input while preserving existing draft text. Commands and Skills are
-separate compact sections; there is no sidebar entry, modal library or native import/remove UI.
+Skills open through `/` completion in the composer. In prose, completion offers only installed
+Skills; selecting an exact Skill id projects it into the existing leading authored directive block, while
+slash text in paths, links and code stays literal. App commands remain available only in the
+leading command block. The attachment popup's Skills button inserts that leading slash and focuses
+the input while preserving existing draft text. `@` completion browses entries under the current
+Local Project via the existing project-files listing authority and inserts a project-relative text
+reference; it does not upload a file or broaden filesystem access. Commands, Skills and project
+files are separate compact sections; there is no sidebar entry, modal library or native import/remove UI.
 Commands: `/plan`, `/goal`, `/loop`, `/compact`, plus Codex's `/model` and `/reasoning` (open the model picker), `/new`, `/rename`, `/pin`, `/status` (the context meter's panel), `/review` and `/init` (put a review or AGENTS.md request in front of the draft, unsent), `/usage`, `/plugins`, `/pet` and `/feedback` (Settings → Activity, the diagnostics report). `/rename`, `/pin`, `/status` and `/compact` are offered only while a chat is open (`commandAvailable`); popups open after the choosing click has passed the outside-click handlers.
 A small plus icon to the right of that Skills button inserts `Please add the following skills to my COS skills:`
 into the authored draft without sending it. ChatGPT can create Markdown instructions through
 the existing permission-checked `/skills` filesystem root. Leading `/id` or `/prompt id` completion projects selected
 commands as removable chips. The existing authored draft retains those command bytes; chips and
 the visible task textarea are projections, never a separate selection ledger. Multiple commands
-preserve order and deduplicate; prose/code later in a message is literal. Empty/loading/no-match
+preserve order and deduplicate; prose/code later in a message is literal. Inline exact Skill
+selection is projected into the same leading directive block, so `skillDirectives` remains the
+authority for submitted Skill ids. Empty/loading/no-match
 states do not intercept Enter. Draft replacement, navigation, render generations and IME composition retire stale choices.
 
 `skill-library.ts` discovers repository `.agents/skills`, project `.codex/skills`, standard user,
@@ -977,6 +1053,38 @@ chats receive no project file. Missing AGENTS is fine; an unsafe/unreadable/bina
 preparation visibly. Full prompt budgeting and
 hidden framing are described in §6.
 
+### Projects on a server (SSH, #1469)
+
+A `Root` and a `LocalProject` may carry `remote: RemoteFolder` (`src/shared/types.ts`): `host` as
+the person typed it (an ssh-config alias or `user@host`, never starting with `-`), optional `port`,
+and the absolute folder on the server. Their `path` is then the identity `host[:port]:/path`
+(`remoteIdentity`), never a local path. `addRemoteProject(address, folder)` (IPC
+`projects:addRemote`, preload `addRemoteProject`) parses with `parseRemote`, asks the server once
+over SFTP (`realpath`, then `stat`: a folder), and adds the root and the project; the same server
+folder again is the same project. Connections only through the system `ssh`
+(`src/main/remote/ssh.ts`) with `BatchMode=yes`: key or agent login only. Files go over one SFTP
+session per address (`sftpFor`), commands over `ssh host remoteCommand(folder, command)`.
+
+`resolvePath` refuses a server folder unless the caller passes `remote: true`: every caller that has
+not opted in acts on this computer's disk, where the server path would name an unrelated local
+file. Opted in are the read tools (`read`, glob expansion, `view_image`), `find`, `apply_patch`,
+`exec_command` (via `resolveCwd`) and Files' listing/preview (`serverTarget` in
+`project-files.ts`). They reach the server through `ProjectFs` (`src/main/remote/project-fs.ts`:
+`localFs`, `sftpFs`, `fsForRoot`), which keeps the local errors (`ENOENT`, `EEXIST`, `EINVAL` …), the
+read limits and the walk order, never follows a link when listing or removing, writes whole files
+(temporary file + rename, mode kept, through a link to its target) and reopens a dropped SFTP session
+once. Server-side containment is `resolveRemote` in `sandbox.ts`: no `..`, a link that leaves the
+folder and a dangling link are refused (OpenSSH's realpath tolerates a missing last component, so
+existence is checked with `stat` first). One patch stays inside one server folder. `find` without a
+path names an unreachable server folder under `not_searched` and searches the rest; a regex is
+matched in the app there (ripgrep is local only). A command runs as one ssh connection of its own
+(`-T`, or `-tt` for a terminal) from the app's temp folder; the workspace terminal is `ssh -tt`
+into the folder's login shell (`remoteLoginShell`), and typing checks the project's address in the
+local config, not the server. Not in v1, each refused in one sentence: editing a server project's
+files from the app (Files' create/rename/save), its Git panel, the file watcher, and worktrees for
+workers (they share the server folder). The server needs a POSIX shell and SFTP; nothing is
+installed there.
+
 ### Native ChatGPT Project for a new CoS project (#1176)
 
 One-way, CoS-owned and only for projects created after this existed: `addProject` gives a new row
@@ -1250,9 +1358,22 @@ Browser Send puts a Chat On Steroids Core app mention in front of the text, beca
 (Plus in Chat mode, #861) attach the app to a message only when the message mentions it.
 `ui.mentionCore` (Settings › General, default on, delivered to the page with the activity reply) can
 leave the mention off the user's own prompts, which on other accounts start plain questions with a
-probe tool call (#952). Workers, Continue recovery, Goal and Loop always keep it, because they need
-the app to answer. A Goal helper decision (`purpose: 'decision'`) never gets it.
-A fresh-turn continue (`purpose: 'rotation'`, #1402, see the settings table) keeps it.
+probe tool call (#952). Workers, Continue recovery, Goal and Loop always keep Core,
+because they need the app to answer. A Goal helper decision (`purpose: 'decision'`)
+never gets an app mention. A fresh-turn continue (`purpose: 'rotation'`, #1402)
+also keeps Core.
+An independent default-off `ui.mentionPlugins` preference selects **Plugins instead of Core**
+for ordinary user-authored prompts COS sends; Goal/Loop and fresh-turn continues follow the
+Core mention as before, workers and recovery always select Core, and decision helpers still
+select neither. The exact Plugins app id comes
+only from this page's provider system hints and must match this installation's connector
+name, including its optional computer suffix. Missing, duplicate or foreign IDs
+produce no Plugins token, never a guessed or other-computer attachment; the prompt then
+keeps the Core mention (when that is on), so an account that attaches apps only on mention
+(#861) never loses its tools to a missing Plugins app. App-managed
+picture requests still suppress mentions; directly typed ChatGPT messages are untouched.
+The provider can withhold or cache tool declarations even with an authentic mention;
+this is not a repair of stale tool catalogs or ChatGPT-side exposure decisions.
 ChatGPT switches its own image tool off for a message that mentions an app (measured
 2026-10-05: per message, also as a follow-up in a chat whose first message had the mention). So a
 person's own message (`authoredSource` text, not `decision`/recovery/`finishOwner`, not a worker or
