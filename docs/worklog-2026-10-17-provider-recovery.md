@@ -27,3 +27,10 @@ failure, and a normal catalog refresh became ready after draft preservation.
 The accompanying router repair preserves OpenAI SSE errors for translated Claude
 and Responses clients and rejects error envelopes before nonstreaming success
 translation. That repair is separate from this project's changes.
+
+Live acceptance after the provider's stated cooldown: Pi called its shell tool,
+PowerShell returned 42 for 19 + 23, and Pi's final answer was `COS_PI_OK_42`.
+Both admitted provider inputs recorded `gpt-6` with `xhigh`. Router replicas had
+matching configuration checkpoints, no name conflicts and all eight existing
+combos preserved. The Azure provider runtime was patched, but its independent
+ChatGPT sign-in is still required before it can serve coding requests.
