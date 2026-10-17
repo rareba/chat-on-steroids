@@ -422,18 +422,38 @@ it('bounds a blocked model discovery separately from the coding deadline and adm
   }
 });
 
-it('returns a provider blocking notice and its retry time instead of waiting for a nonexistent turn', async () => {
+it.each([true, false])('returns a provider blocking notice without requeueing, including after restart (retry time: %s)', async reportedExpiry => {
   const before = new Set((await listInputs()).map(row => row.id));
   process.env.COS_OPENAI_API_TIMEOUT_MS = '1500';
+  vi.useFakeTimers({ toFake: ['Date'] });
   try {
     const pending = request(prompt()); const row = await admitted(before);
     await createSession({ reservedId: row.id, conversationId: null, origin: { kind: 'desktop', fromSessionId: null, agentId: null, task: '' } });
-    await appendEvent(row.id, { kind: 'chat_error', source: 'extension', time: Date.now(), message: { text: 'ChatGPT asked to wait until the account check ends.', chars: 52, truncated: false }, blocking: true, recoverable: false, retryAt: Date.now() + 60000 });
+    await appendEvent(row.id, { kind: 'chat_error', source: 'extension', time: Date.now(), message: { text: 'ChatGPT asked to wait until the account check ends.', chars: 52, truncated: false }, blocking: true, recoverable: false, ...(reportedExpiry ? { retryAt: Date.now() + 60000 } : {}) });
     const response = await pending;
     expect(response.status).toBe(429);
     expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0);
     expect((await response.json()).error.message).toContain('account check');
-  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+    const admittedCount = (await listInputs()).length;
+    const blocked = await request(prompt());
+    expect(blocked.status).toBe(429);
+    expect((await listInputs()).length).toBe(admittedCount);
+    const health = await (await request(undefined, {}, '/v1/health')).json();
+    expect(health).toMatchObject({ ready: false, providerLimit: { retryAt: expect.any(Number) } });
+    await flushDurable(); await api.stopControlApi(); await api.startControlApi();
+    port = JSON.parse(await fs.readFile(path.join(dir, 'openai-api', 'endpoint.json'), 'utf8')).port;
+    expect((await request(prompt())).status).toBe(429);
+    expect((await listInputs()).length).toBe(admittedCount);
+    vi.setSystemTime(Date.now() + 61000);
+    const ids = new Set((await listInputs()).map(input => input.id));
+    const resumed = request(prompt()); const next = await admitted(ids);
+    await answer(next.id, 'resumed after cooldown');
+    expect((await resumed).status).toBe(200);
+  } finally {
+    vi.setSystemTime(Date.now() + 86400001);
+    await request(undefined, {}, '/v1/health').catch(() => undefined);
+    vi.useRealTimers(); delete process.env.COS_OPENAI_API_TIMEOUT_MS;
+  }
 });
 
 it('pins the newest observed GPT generation at Extra High and requires matching delivery proof', async () => {

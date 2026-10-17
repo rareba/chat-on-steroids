@@ -28,6 +28,14 @@ The gateway must run on the same host or use an authenticated SSH tunnel.
 exporting cookies. `GET /v1/health` reports browser connectivity and the built-in
 browser's observed sign-in state. External browsers report `signedIn: null`;
 their readiness uses a successful account-model observation from the last hour.
+Health also reports model-discovery diagnostics and any active `providerLimit`.
+Account refusals pause new coding requests until the reported retry time; without
+one, CoS uses a 60-second backoff. The pause survives restarts, marks readiness
+false, and returns HTTP 429 with `Retry-After` without admitting another prompt.
+After expiry, fresh requests can proceed; cancelled or uncertain requests are
+never replayed automatically. Model discovery has a separate 15-second deadline
+so a blocked draft/picker cannot consume the full coding timeout. ChatGPT's own
+account restrictions remain enforced.
 These routes require
 the same bearer key. The Debian `cos-login` helper opens that window for you.
 The login endpoint allows one opening per minute to avoid repeatedly restarting

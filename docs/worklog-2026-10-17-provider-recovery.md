@@ -34,3 +34,11 @@ Both admitted provider inputs recorded `gpt-6` with `xhigh`. Router replicas had
 matching configuration checkpoints, no name conflicts and all eight existing
 combos preserved. The Azure provider runtime was patched, but its independent
 ChatGPT sign-in is still required before it can serve coding requests.
+
+Recurrence safeguard: preserve the provider retry deadline in the existing
+durable store. New requests return 429 without admitting more browser work;
+health reports the pause, restarts retain it, and fresh requests resume after
+expiry. Notices without a deadline receive a bounded 60-second backoff. A real
+HTTP/outbox regression covers rejection, restart persistence and expiry with
+both supplied and missing provider retry times. No unknown-outcome request is
+replayed and no user-authored browser draft is erased automatically.
