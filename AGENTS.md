@@ -1851,6 +1851,9 @@ replace stable identities by temp→rename, never regress final to streaming, an
 chronological anchors across revisions. Metadata coalesces ordinary updates but writes immediately
 at ownership boundaries; it can rebuild history-derived fields without inventing an empty session
 when recovery lacks proof. Legacy files overlay lazily rather than triggering a whole-history rewrite.
+Rebuilding for newly introduced derived fields or estimate versions is an informational migration.
+Missing checkpoints and known history-watermark mismatches remain warnings; successful reconstruction
+is logged only after the replacement checkpoint is written.
 
 Native image-only user messages keep their exact message identity, empty authored text and
 bounded attachment metadata. They participate in the same turn/receipt chronology as text and
@@ -2094,7 +2097,11 @@ safe nesting identities. Usage cache version 9 retains the distinction on record
 `extension/usage.js` observes bounded allowed account-usage responses in MAIN world, including
 already available state; it does not retain raw account payloads. App `session/usage.ts` accepts
 one fresh validated snapshot, replaces rather than merges accounts/tabs, and distinguishes
-model, shared and feature pools. Missing/expired values mean unreported, never zero/full.
+model, feature and `codex` pools. Missing/expired values mean unreported, never zero/full.
+`codex` rows come from `/backend-api/wham/usage`, which is **Codex's** usage (the 5-hour and weekly
+windows Codex's /status and ChatGPT's sidebar panel show), never a limit on ChatGPT chat messages;
+the Usage tab and the `usage` tool label them as Codex. An extension before 2.1.40 sends them as
+`shared`, which the app reads as `codex`.
 
 Daily work/cost charts use a **local estimate**: cap final frontend context, then / 2 per unique
 recorded tool call, with editable divisor, multiplier and per-model comparison rates. If the
@@ -3497,6 +3504,10 @@ An exact caller without its own family receives a successful empty `agents statu
 of other active primes. A permitted unresolved request can likewise inspect its own state and
 start its own family. Missing both exact proof and permitted request identity refuses only that
 operation. Sleeping-worker measurement remains scoped to the caller's actual history.
+A worker whose chat shows ChatGPT's tool approval card (`approvalCardWaiting`) is marked in the
+status table ("needs the user to answer a tool approval in its chat"), named in one sentence below
+it, and carries `needs_user_approval: true` in the structured agents list, so a prime tells the
+person instead of reading the wait as a stuck runtime.
 
 Spawn validates both per-family and optional global capacity, objective/context, account-observed model/effort, workspace and role,
 then durably reserves the worker before handing out browser work. Model checks precede every
@@ -4202,9 +4213,11 @@ catalogs (`i18n.ts`, `locales/{es,zh-CN,zh-TW,ja,ko,tr,fr,pt-PT,pt-BR,de,ru,vi}.
 `cos.ui.language`. The main process has no catalogs: the renderer translates the allowlisted
 stopped-chat notice texts (`shared/stop-notice.ts`) and publishes them over `ui:stopNoticeTexts`
 at startup and on each language change; unknown keys are refused and untranslated notices stay English.
-The tray menu, its tooltip, the Session finish notice with its buttons and tunnel-loss notices work
-the same way: the allowlisted `shared/main-texts.ts` over `ui:mainTexts`, kept by
-`main/main-texts.ts`, which repaints the tray.
+The tray menu, its tooltip, the Session finish notice with its buttons, tunnel-loss notices and the
+main process's native dialogs (file dialog titles and filter names, the worker checkout removal
+confirmation) work the same way: the allowlisted `shared/main-texts.ts` over `ui:mainTexts`, kept by
+`main/main-texts.ts`, which repaints the tray. The channel accepts at most `MAIN_TEXTS.length` keys;
+counts and paths are filled into `{0}` after translation, with a function replacement.
 The renderer also reports the language over `ui:language`; the main process keeps it as `ui.language`
 and hands it to the extension in the `/status` reply (`language`). The extension stores it as
 `appLanguage` and `i18n.js` then reads that catalog itself (content scripts get it from the service
@@ -4922,6 +4935,10 @@ UIA helper; macOS uses Swift ScreenCaptureKit/AX/CGEvent through an architecture
 addon on an Electron worker. The packaged Electron app is the macOS permission subject; a
 standalone CLI probe does not prove Screen Recording/Accessibility permission for the app.
 
+The permission self-test reports native preflight results, not a completed capture or input.
+An actual screenshot and AX query remain separate evidence; the existing grant-history and
+Repair permissions guidance are preserved.
+
 macOS keeps those grants per code signature, and releases are ad-hoc signed, so after an update
 System Settings still shows a grant that no longer applies. `computer/macos-grants.ts` records
 which permissions the app was ever seen holding (durable `macos-permission-grants`) and exposes
@@ -4942,6 +4959,10 @@ unresolved requests cannot borrow observations. Headerless calls retain a separa
 anonymous context; opting out refuses indexed/coordinate input without exact identity.
 Explicit activation consumes observation state too; ordinary input already activates its target.
 Late observations and replaced principals cannot lend another call their state.
+Single-window capture includes the cursor only when ScreenCaptureKit reports the window on
+screen: requesting the current desktop cursor for an off-Space window fails with -3811.
+Observation never activates that window or substitutes current-desktop pixels.
+`test/fixtures/verify-macos-window-capture.mjs` exercises this decision with the production Swift.
 Observe → act uses exact frame/ref, target geometry and
 helper generation. Recheck those after asynchronous image work and before every local action
 in a batch. A replaced helper/window/display invalidates old coordinates and refs. Bound

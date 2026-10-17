@@ -799,6 +799,8 @@
    * never runs: the whole resumed turn's work fell into Unattributed activity.
    */
   const USER_SEND_RECEIPT_MS = 30_000;
+  /** Waits before asking the worker again for a send acknowledgement whose reply was lost. */
+  const ACK_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000];
   let userSendReceipt = null;
   const pageViewChecks = new Set(); // Existing readiness waits also observe accepted MAIN-world snapshots.
   const sendText = (value) => String(value || '').replace(/\s+/g, '');
@@ -13217,6 +13219,15 @@
             try { cleared = await draft.clear(); } catch { /* An unclearable draft is no proof. */ }
             if (cleared) return fail('Native Send did not take the message.');
           }
+          // The app's own automatic continue is never the person's text. A rotation that fired as
+          // the model finished collided with the turn's end: nothing was sent, ChatGPT redrew the
+          // question, and the continue sat in the composer until the person's next message failed
+          // on "an unsent draft" (2.1.40 release round). Still uncertain, so never resent, but an
+          // exact copy of it is taken out of the composer.
+          if ((input.purpose === 'rotation' || input.recovery) && onTarget() &&
+              sendText(CLF_DOM.composer()?.textContent) === submittedText) {
+            try { await draft.clear(); } catch { /* An unclearable draft stays where it is. */ }
+          }
           return fail('Native Send receipt was not confirmed.');
         }
         return false;
@@ -13250,15 +13261,27 @@
         if (temporary) rememberServedPlanner(message.id, input.owner);
         completeDesktopDecision();
       }
-      // The claim remains inert if this ACK is lost; no duplicate send after a reload.
-      const acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
+      // The claim remains inert if this ACK is lost; no duplicate send after a reload. A lost reply
+      // is asked again: the worker journals the receipt by input id, so a repeat is the same ACK.
+      // In Firefox the background event page can answer nothing while it restarts, and the row then
+      // sat in "browser" for hours with its chat and queue blocked (2026-10-16).
+      // The wait between attempts uses this script's own timer: a plain one was never seen to fire
+      // in a background Firefox window, so the second attempt never went out.
+      let acknowledged = null;
+      for (let attempt = 0; attempt < ACK_RETRY_DELAYS_MS.length + 1 && alive; attempt++) {
+        if (attempt > 0) await sleep(ACK_RETRY_DELAYS_MS[attempt - 1]);
+        acknowledged = await ask({ type: 'desktop_input', id: message.id, conversationId: deliveredConversation, messageId: receipt.user?.id, owner: input.owner, lifetime: input.lifetime, ack: true });
+        if (acknowledged !== null && acknowledged !== undefined) break;
+      }
       const accepted = acknowledged?.data?.ok === true;
       if (accepted && deliveredConversation && receipt.user?.id && sendingTarget() &&
           userSendReceipt === witnessedSendReceipt && witnessedSendReceipt?.text === submittedText &&
           (witnessedSendReceipt.conversationId === target ||
             (!target && witnessedSendReceipt.conversationId === deliveredConversation)) &&
-          (witnessedSendReceipt.previousMessageId ?? null) === (previousUserId ?? null) &&
-          Date.now() - witnessedSendReceipt.at <= USER_SEND_RECEIPT_MS) {
+          (witnessedSendReceipt.previousMessageId ?? null) === (previousUserId ?? null)) {
+        // No age limit: the checks above prove this is the same live receipt for this send. A
+        // background Firefox window stretched Send to the app's acknowledgement past 30 s, the
+        // receipt went unaccepted and then expired, and the first turn never opened (2026-10-16).
         witnessedSendReceipt.accepted = { messageId: receipt.user.id, conversationId: deliveredConversation, epoch };
       }
       // Stop/composer-clear may precede the exact user row. This receipt, not that early
@@ -13850,6 +13873,21 @@
               !(CLF_DOM.composer().textContent || '').trim() && !CLF_DOM.hasComposerAttachments() });
         })().catch(() => sendResponse({ safe: false }));
         return true;
+      }
+      // The extension closes the tab of a new chat's first message that was cancelled before Send.
+      // Only this exact opening page, still on ChatGPT's start page, with nothing typed, sent,
+      // attached or running, and no send of this page in flight.
+      if (message.type === 'clf-close-cancelled-opening') {
+        const id = typeof message.id === 'string' ? message.id : '';
+        let marked = false;
+        try {
+          const url = new URL(location.href);
+          marked = !!id && (url.searchParams.get('cos-input') === id || new URLSearchParams(url.hash.slice(1)).get('cos-input') === id);
+        } catch { marked = false; }
+        sendResponse({ safe: marked && !CLF_DOM.conversationId() && !desktopInputBusy && !generating && !CLF_DOM.generating() &&
+          pendingTools === 0 && !CLF_DOM.hasComposerAttachments() && !(CLF_DOM.composer()?.textContent || '').trim() &&
+          CLF_DOM.messages().filter(row => row.role === 'user').length === 0 });
+        return false;
       }
       if (message.type === 'clf-close-temporary-planner') {
         const users = CLF_DOM.messages().filter(row => row.role === 'user');

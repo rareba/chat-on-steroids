@@ -98,6 +98,20 @@ it('keeps inline /prompt in Skill selection and leading /prompt in app commands'
   expect([...f.host.querySelectorAll<HTMLElement>('.slash-menu-option')].some(row => row.title === '/plan')).toBe(true);
 });
 
+it('finds an @ reference in linear time, however much text comes before it', () => {
+  // A pasted run of escaped spaces ("\\ @") made every keystroke rescan the text from each @:
+  // 200 KB froze the composer for 17 s. A reference never spans lines and is never this long.
+  const pasted = 'x ' + '@\\ '.repeat(66_000) + 'x y';
+  const startedAt = performance.now();
+  expect(skillCompletion(pasted, pasted.length)).toBeNull();
+  expect(skillCompletion(`${pasted}\nsee @src/ma`, pasted.length + 14)).toMatchObject({ kind: 'file', directory: 'src', query: 'ma' });
+  expect(performance.now() - startedAt).toBeLessThan(1000);
+  // Escaped spaces still work, also at the start of a line, and a long reference still completes.
+  expect(skillCompletion('@My\\ Folder/fi', 14)).toMatchObject({ start: 0, kind: 'file', directory: 'My Folder', query: 'fi' });
+  expect(skillCompletion('a\n@My\\ Folder/fi', 16)).toMatchObject({ start: 2, kind: 'file', directory: 'My Folder' });
+  expect(skillCompletion('a\\\n@b', 5)).toMatchObject({ start: 3, kind: 'file', query: 'b' });
+});
+
 it('opens a project-scoped @ picker and inserts a relative file or folder reference', async () => {
   const f = await fixture();
   f.input.value = 'Inspect @src with this file'; f.input.setSelectionRange('Inspect @src'.length, 'Inspect @src'.length);
@@ -332,4 +346,17 @@ it('shows a failed library load and ignores a result for an old scope', async ()
   f.list.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
   f.type('/'); f.owner('b:2'); f.type('B draft'); resolve({ ok: true, data: library() }); await settle();
   expect(f.picker.authoredText()).toBe('B draft'); expect(f.host.hidden).toBe(true);
+});
+
+it('finds an app command by the name the menu shows in the interface language', async () => {
+  // The German menu says "Umbenennen" for /rename; typing what it shows found nothing (2.1.41 pass).
+  const { setLanguage } = await import('../src/renderer/i18n.js');
+  setLanguage('de');
+  const f = await fixture([skill], true);
+  f.type('/umb'); await settle();
+  expect([...f.host.querySelectorAll<HTMLElement>('.slash-menu-option')].map(row => row.title)).toEqual(['/rename']);
+  f.key('Enter');
+  expect(f.command).toHaveBeenCalledWith('rename');
+  f.type('/rena'); await settle();
+  expect([...f.host.querySelectorAll<HTMLElement>('.slash-menu-option')].map(row => row.title)).toEqual(['/rename']);
 });
