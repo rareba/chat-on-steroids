@@ -3260,7 +3260,8 @@
         recoverable: error.recoverable === true,
         // The dialog branch above is the only thing that sets this, and it is what tells the
         // app a provider access limit was identified without the app re-reading the prose.
-        blocking: error.blocking === true
+        blocking: error.blocking === true,
+        ...(error.blocking === true && Number.isFinite(error.retryAt) ? { retryAt: error.retryAt } : {})
       });
     }
 

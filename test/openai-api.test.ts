@@ -340,7 +340,8 @@ it('opens the existing built-in sign-in flow on demand without returning cookies
   expect((await request({}, {}, '/v1/login')).status).toBe(429);
   expect(signIn).toHaveBeenCalledOnce();
   const health = await request(undefined, {}, '/v1/health');
-  expect(await health.json()).toEqual({ browserConnected: true, signedIn: null, ready: false, pendingRequests: 0, requestCapacity: 32, activeRequests: 0, workerCapacity: 4 });
+  expect(await health.json()).toMatchObject({ browserConnected: true, signedIn: null, ready: false, pendingRequests: 0, requestCapacity: 32, activeRequests: 0, workerCapacity: 4,
+    modelCatalog: { state: expect.any(String), observedAt: null } });
   vi.setSystemTime(Date.now() + 61_000);
   gate.browser = 'chrome';
   try {
@@ -398,6 +399,42 @@ function modelPolicy(models: ChatModelOption[], state: 'ready' | 'unknown' = 're
     delete process.env.COS_OPENAI_MODEL; delete process.env.COS_OPENAI_REASONING_EFFORT;
   };
 }
+
+it('bounds a blocked model discovery separately from the coding deadline and admits no draft', async () => {
+  const before = (await listInputs()).length;
+  const catalog = { state: 'pending' as const, models: [], requestedAt: Date.now(), observedAt: null, waiting: 'An unsent browser draft is protected. Discovery needs an empty composer.' };
+  const read = vi.spyOn(chatModels, 'getChatModels').mockReturnValue(catalog);
+  const refresh = vi.spyOn(chatModels, 'requestChatModels').mockReturnValue(catalog);
+  process.env.COS_OPENAI_MODEL = 'latest'; process.env.COS_OPENAI_REASONING_EFFORT = 'xhigh';
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '1500';
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const pending = request(prompt());
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+    vi.setSystemTime(Date.now() + 15001);
+    const response = await pending;
+    expect(response.status).toBe(503);
+    expect((await response.json()).error.message).toMatch(/model discovery.*draft/i);
+    expect((await listInputs()).length).toBe(before);
+  } finally {
+    vi.useRealTimers(); read.mockRestore(); refresh.mockRestore();
+    delete process.env.COS_OPENAI_MODEL; delete process.env.COS_OPENAI_REASONING_EFFORT; delete process.env.COS_OPENAI_API_TIMEOUT_MS;
+  }
+});
+
+it('returns a provider blocking notice and its retry time instead of waiting for a nonexistent turn', async () => {
+  const before = new Set((await listInputs()).map(row => row.id));
+  process.env.COS_OPENAI_API_TIMEOUT_MS = '1500';
+  try {
+    const pending = request(prompt()); const row = await admitted(before);
+    await createSession({ reservedId: row.id, conversationId: null, origin: { kind: 'desktop', fromSessionId: null, agentId: null, task: '' } });
+    await appendEvent(row.id, { kind: 'chat_error', source: 'extension', time: Date.now(), message: { text: 'ChatGPT asked to wait until the account check ends.', chars: 52, truncated: false }, blocking: true, recoverable: false, retryAt: Date.now() + 60000 });
+    const response = await pending;
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await response.json()).error.message).toContain('account check');
+  } finally { delete process.env.COS_OPENAI_API_TIMEOUT_MS; }
+});
 
 it('pins the newest observed GPT generation at Extra High and requires matching delivery proof', async () => {
   const restore = modelPolicy([
@@ -483,7 +520,8 @@ it('reports external Chrome readiness from a fresh account catalog without claim
   const restore = modelPolicy([{ id: 'gpt-6', label: 'GPT-6', efforts: ['xhigh'] }]);
   try {
     const response = await request(undefined, {}, '/v1/health');
-    expect(await response.json()).toEqual({ browserConnected: true, signedIn: null, ready: true, pendingRequests: 0, requestCapacity: 32, activeRequests: 0, workerCapacity: 4 });
+    expect(await response.json()).toMatchObject({ browserConnected: true, signedIn: null, ready: true, pendingRequests: 0, requestCapacity: 32, activeRequests: 0, workerCapacity: 4,
+      modelCatalog: { state: 'ready', waiting: null, error: null } });
   } finally { restore(); gate.browser = 'cos'; }
 });
 
